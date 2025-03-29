@@ -1146,6 +1146,21 @@ def environment_tab():
             "description": "Embedding model you want to use",
             "help": "Example for Ollama: nomic-embed-text\n\nExample for OpenAI: text-embedding-3-small",
             "sensitive": False
+        },
+        "MISTRAL_API_KEY": {
+            "description": "Your Mistral AI API key",
+            "help": "Get your Mistral API key from https://console.mistral.ai/\n\nOnly needed if you plan to use Mistral's embedding model instead of OpenAI's.",
+            "sensitive": True
+        },
+        "MISTRAL_EMBEDDING_MODEL": {
+            "description": "Mistral embedding model you want to use",
+            "help": "Example: mistral-embed\n\nOnly needed if you plan to use Mistral's embedding model.",
+            "sensitive": False
+        },
+        "MISTRAL_BASE_URL": {
+            "description": "Set Base URL of Mistral.",
+            "help": "Set Base URL of Mistral.",
+            "sensitive": False
         }
     }
     

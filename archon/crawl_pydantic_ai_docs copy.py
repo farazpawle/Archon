@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 import re
 import html2text
+from mistralai import Mistral
 
 # Add the parent directory to sys.path to allow importing from the parent directory
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -22,27 +23,39 @@ from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from openai import AsyncOpenAI
 from supabase import create_client, Client
 
+# Initialize Mistral configuration
+mistral_api_key = get_env_var('MISTRAL_API_KEY')
+mistral_embedding_model = get_env_var('MISTRAL_EMBEDDING_MODEL') or 'mistral-embed'
+use_mistral_embeddings = (get_env_var('USE_MISTRAL_EMBEDDINGS') or 'false').lower() == 'true'
+
+# Initialize Mistral client if we're using Mistral embeddings
+mistral_client = None
+if use_mistral_embeddings and mistral_api_key:
+    mistral_client = Mistral(api_key=mistral_api_key)
 load_dotenv()
 
 # Initialize OpenAI and Supabase clients
 
-# base_url = get_env_var('BASE_URL') or 'https://api.openai.com/v1'
-base_url = get_env_var('MISTRAL_BASE_URL') or 'https://api.openai.com/v1'
-# api_key = get_env_var('LLM_API_KEY') or 'no-llm-api-key-provided'
-api_key = get_env_var('MISTRAL_API_KEY') or 'no-llm-api-key-provided'
-
+base_url = get_env_var('BASE_URL') or 'https://api.openai.com/v1'
+api_key = get_env_var('LLM_API_KEY') or 'no-llm-api-key-provided'
 is_ollama = "localhost" in base_url.lower()
 
-# embedding_model = get_env_var('EMBEDDING_MODEL') or 'text-embedding-3-small'
 embedding_model = get_env_var('EMBEDDING_MODEL') or 'text-embedding-3-small'
 
-openai_client=None
+# Initialize OpenAI client only if we have a valid API key
+openai_api_key = get_env_var("OPENAI_API_KEY")
+openai_client = None
 
 if is_ollama:
-    openai_client = AsyncOpenAI(base_url=base_url,api_key=api_key)
+    openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+elif openai_api_key:
+    openai_client = AsyncOpenAI(api_key=openai_api_key)
 else:
-    # openai_client = AsyncOpenAI(api_key=get_env_var("OPENAI_API_KEY"))
-    openai_client = AsyncOpenAI(api_key=api_key)
+    # Only print a warning if we're not using Mistral embeddings
+    if not use_mistral_embeddings:
+        print("WARNING: No OpenAI API key provided. Embeddings will not work.")
+    else:
+        print("WARNING: No OpenAI API key provided. Using Mistral for embeddings but title/summary generation will be limited.")
 
 supabase: Client = create_client(
     get_env_var("SUPABASE_URL"),
@@ -198,31 +211,99 @@ async def get_title_and_summary(chunk: str, url: str) -> Dict[str, str]:
     For the summary: Create a concise summary of the main points in this chunk.
     Keep both title and summary concise but informative."""
     
-    try:
-        response = await openai_client.chat.completions.create(
-            model=get_env_var("PRIMARY_MODEL") or "gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"URL: {url}\n\nContent:\n{chunk[:1000]}..."}  # Send first 1000 chars for context
-            ],
-            response_format={ "type": "json_object" }
-        )
-        return json.loads(response.choices[0].message.content)
-    except Exception as e:
-        print(f"Error getting title and summary: {e}")
-        return {"title": "Error processing title", "summary": "Error processing summary"}
+    # Try with OpenAI first if available
+    if openai_client:
+        try:
+            response = await openai_client.chat.completions.create(
+                model=get_env_var("PRIMARY_MODEL") or "gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"URL: {url}\n\nContent:\n{chunk[:1000]}..."}  # Send first 1000 chars for context
+                ],
+                response_format={ "type": "json_object" }
+            )
+            return json.loads(response.choices[0].message.content)
+        except Exception as e:
+            print(f"Error getting title and summary with OpenAI: {e}")
+            # Fall through to next method
+    
+    # Try with Mistral if OpenAI failed or isn't available
+    if mistral_client:
+        try:
+            # For Mistral, we need to use an event loop and a thread to make the synchronous API call
+            loop = asyncio.get_running_loop()
+            
+            def _get_mistral_title_summary():
+                response = mistral_client.chat(
+                    model="mistral-large-latest",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"URL: {url}\n\nContent:\n{chunk[:1000]}..."}
+                    ]
+                )
+                # Parse JSON from response
+                try:
+                    return json.loads(response.choices[0].message.content)
+                except json.JSONDecodeError:
+                    # Fallback if JSON parsing fails
+                    content = response.choices[0].message.content
+                    return {
+                        "title": content.split("\n", 1)[0][:50],
+                        "summary": content[:150]
+                    }
+            
+            # Run the synchronous Mistral API call in a thread
+            return await loop.run_in_executor(None, _get_mistral_title_summary)
+        except Exception as e:
+            print(f"Error getting title and summary with Mistral: {e}")
+            # Fall through to simple extraction
+    
+    # If both OpenAI and Mistral failed or aren't available, use simple extraction
+    # Extract first line or first 50 chars for title
+    first_line = chunk.split('\n', 1)[0].strip()
+    title = first_line[:50] + ('...' if len(first_line) > 50 else '')
+    
+    # Use first paragraph or first 100 chars for summary
+    first_paragraph = chunk.split('\n\n', 1)[0].strip()
+    summary = first_paragraph[:100] + ('...' if len(first_paragraph) > 100 else '')
+    
+    return {"title": title, "summary": summary}
 
 async def get_embedding(text: str) -> List[float]:
-    """Get embedding vector from OpenAI."""
-    try:
-        response = await openai_client.embeddings.create(
-            model= embedding_model,
-            input=text
-        )
-        return response.data[0].embedding
-    except Exception as e:
-        print(f"Error getting embedding: {e}")
-        return [0] * 1536  # Return zero vector on error
+    """Get embedding vector from OpenAI or Mistral."""
+    if use_mistral_embeddings and mistral_client:
+        try:
+            # For Mistral, we need to use an event loop and a thread to make the synchronous API call
+            loop = asyncio.get_running_loop()
+            
+            def _get_mistral_embedding():
+                response = mistral_client.embeddings(
+                    model=mistral_embedding_model,
+                    inputs=[text]
+                )
+                return response.data[0].embedding
+            
+            # Run the synchronous Mistral API call in a thread
+            embedding = await loop.run_in_executor(None, _get_mistral_embedding)
+            return embedding
+        except Exception as e:
+            print(f"Error getting Mistral embedding: {e}")
+            return [0] * 1024  # Return zero vector with Mistral's dimension
+    elif openai_client:
+        # Use OpenAI's embedding model (existing implementation)
+        try:
+            response = await openai_client.embeddings.create(
+                model=embedding_model,
+                input=text
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            print(f"Error getting OpenAI embedding: {e}")
+            return [0] * 1536  # Return zero vector on error
+    else:
+        # Neither OpenAI nor Mistral is available
+        print("WARNING: No embedding provider available. Returning zero vector.")
+        return [0] * 1536  # Default to OpenAI dimensions
 
 async def process_chunk(chunk: str, chunk_number: int, url: str) -> ProcessedChunk:
     """Process a single chunk of text."""
@@ -496,7 +577,14 @@ def start_crawl_with_requests(progress_callback: Optional[Callable[[Dict[str, An
     
     def run_crawl():
         try:
-            asyncio.run(main_with_requests(tracker))
+            # Create a new event loop for this thread instead of using asyncio.run()
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(main_with_requests(tracker))
+            finally:
+                loop.close()
+                asyncio.set_event_loop(None)  # Clean up the event loop reference
         except Exception as e:
             print(f"Error in crawl thread: {e}")
             tracker.log(f"Thread error: {str(e)}")
