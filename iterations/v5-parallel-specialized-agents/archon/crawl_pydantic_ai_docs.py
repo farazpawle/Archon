@@ -27,15 +27,7 @@ load_dotenv()
 # Initialize embedding and Supabase clients
 embedding_client, supabase = get_clients()
 
-# base_url = get_env_var('BASE_URL') or 'https://api.openai.com/v1'
-base_url = get_env_var('MISTRAL_BASE_URL') or 'https://api.openai.com/v1'
-# api_key = get_env_var('LLM_API_KEY') or 'no-llm-api-key-provided'
-api_key = get_env_var('MISTRAL_API_KEY') or 'no-llm-api-key-provided'
-
-is_ollama = "localhost" in base_url.lower()
-
-# embedding_model = get_env_var('EMBEDDING_MODEL') or 'text-embedding-3-small'
-
+# Define the embedding model for embedding the documentation for RAG
 embedding_model = get_env_var('EMBEDDING_MODEL') or 'text-embedding-3-small'
 
 # LLM client setup
@@ -50,13 +42,7 @@ if provider == "Ollama":
         api_key = "ollama"  # Use a dummy key for Ollama
     llm_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
 else:
-    # openai_client = AsyncOpenAI(api_key=get_env_var("OPENAI_API_KEY"))
-    openai_client = AsyncOpenAI(api_key=api_key)
-
-supabase: Client = create_client(
-    get_env_var("SUPABASE_URL"),
-    get_env_var("SUPABASE_SERVICE_KEY")
-)
+    llm_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
 
 # Initialize HTML to Markdown converter
 html_converter = html2text.HTML2Text()

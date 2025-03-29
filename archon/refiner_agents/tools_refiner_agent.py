@@ -17,9 +17,9 @@ from openai import AsyncOpenAI
 from supabase import Client
 
 # Add the parent directory to sys.path to allow importing from the parent directory
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from utils.utils import get_env_var
-from archon.agent_prompts import primary_coder_prompt
+from archon.agent_prompts import tools_refiner_prompt
 from archon.agent_tools import (
     retrieve_relevant_documentation_tool,
     list_documentation_pages_tool,
@@ -34,58 +34,53 @@ base_url = get_env_var('BASE_URL') or 'https://api.openai.com/v1'
 api_key = get_env_var('LLM_API_KEY') or 'no-llm-api-key-provided'
 
 model = AnthropicModel(llm, api_key=api_key) if provider == "Anthropic" else OpenAIModel(llm, base_url=base_url, api_key=api_key)
+embedding_model = get_env_var('EMBEDDING_MODEL') or 'text-embedding-3-small'
 
 logfire.configure(send_to_logfire='if-token-present')
 
 @dataclass
-class PydanticAIDeps:
+class ToolsRefinerDeps:
     supabase: Client
     embedding_client: AsyncOpenAI
-    reasoner_output: str
 
-pydantic_ai_coder = Agent(
+tools_refiner_agent = Agent(
     model,
-    system_prompt=primary_coder_prompt,
-    deps_type=PydanticAIDeps,
+    system_prompt=tools_refiner_prompt,
+    deps_type=ToolsRefinerDeps,
     retries=2
 )
 
-@pydantic_ai_coder.system_prompt  
-def add_reasoner_output(ctx: RunContext[str]) -> str:
-    return f"""
-    \n\nAdditional thoughts/instructions from the reasoner LLM. 
-    This scope includes documentation pages for you to search as well: 
-    {ctx.deps.reasoner_output}
-    """
-
-@pydantic_ai_coder.tool
-async def retrieve_relevant_documentation(ctx: RunContext[PydanticAIDeps], user_query: str) -> str:
+@tools_refiner_agent.tool
+async def retrieve_relevant_documentation(ctx: RunContext[ToolsRefinerDeps], query: str) -> str:
     """
     Retrieve relevant documentation chunks based on the query with RAG.
+    Make sure your searches always focus on implementing tools.
     
     Args:
         ctx: The context including the Supabase client and OpenAI client
-        user_query: The user's question or query
+        query: Your query to retrieve relevant documentation for implementing tools
         
     Returns:
         A formatted string containing the top 4 most relevant documentation chunks
     """
-    return await retrieve_relevant_documentation_tool(ctx.deps.supabase, ctx.deps.embedding_client, user_query)
+    return await retrieve_relevant_documentation_tool(ctx.deps.supabase, ctx.deps.embedding_client, query)
 
-@pydantic_ai_coder.tool
-async def list_documentation_pages(ctx: RunContext[PydanticAIDeps]) -> List[str]:
+@tools_refiner_agent.tool
+async def list_documentation_pages(ctx: RunContext[ToolsRefinerDeps]) -> List[str]:
     """
     Retrieve a list of all available Pydantic AI documentation pages.
+    This will give you all pages available, but focus on the ones related to tools.
     
     Returns:
         List[str]: List of unique URLs for all documentation pages
     """
     return await list_documentation_pages_tool(ctx.deps.supabase)
 
-@pydantic_ai_coder.tool
-async def get_page_content(ctx: RunContext[PydanticAIDeps], url: str) -> str:
+@tools_refiner_agent.tool
+async def get_page_content(ctx: RunContext[ToolsRefinerDeps], url: str) -> str:
     """
     Retrieve the full content of a specific documentation page by combining all its chunks.
+    Only use this tool to get pages related to using tools with Pydantic AI.
     
     Args:
         ctx: The context including the Supabase client

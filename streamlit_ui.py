@@ -1,69 +1,8 @@
 from __future__ import annotations
-from typing import Literal, TypedDict
-from langgraph.types import Command
-import os
-
+from dotenv import load_dotenv
 import streamlit as st
 import logfire
 import asyncio
-import time
-import json
-import uuid
-import sys
-import platform
-import subprocess
-import threading
-import queue
-import webbrowser
-import importlib
-from urllib.parse import urlparse
-from openai import AsyncOpenAI
-from supabase import Client, create_client
-from dotenv import load_dotenv
-from utils.utils import get_env_var, save_env_var, write_to_log
-from future_enhancements import future_enhancements_tab
-
-# Import all the message part classes
-from pydantic_ai.messages import (
-    ModelMessage,
-    ModelRequest,
-    ModelResponse,
-    SystemPromptPart,
-    UserPromptPart,
-    TextPart,
-    ToolCallPart,
-    ToolReturnPart,
-    RetryPromptPart,
-    ModelMessagesTypeAdapter
-)
-
-# Add the current directory to Python path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from archon.archon_graph import agentic_flow
-
-# Load environment variables from .env file
-load_dotenv()
-
-# Initialize clients
-openai_client = None
-base_url = get_env_var('BASE_URL') or 'https://api.openai.com/v1'
-api_key = get_env_var('LLM_API_KEY') or 'no-llm-api-key-provided'
-is_ollama = "localhost" in base_url.lower()
-
-if is_ollama:
-    openai_client = AsyncOpenAI(base_url=base_url,api_key=api_key)
-elif get_env_var("OPENAI_API_KEY"):
-    openai_client = AsyncOpenAI(api_key=get_env_var("OPENAI_API_KEY"))
-else:
-    openai_client = None
-
-if get_env_var("SUPABASE_URL"):
-    supabase: Client = Client(
-            get_env_var("SUPABASE_URL"),
-            get_env_var("SUPABASE_SERVICE_KEY")
-        )
-else:
-    supabase = None
 
 # Set page config - must be the first Streamlit command
 st.set_page_config(
@@ -72,132 +11,29 @@ st.set_page_config(
     layout="wide",
 )
 
-# Set custom theme colors to match Archon logo (green and pink)
-# Primary color (green) and secondary color (pink)
-st.markdown("""
-    <style>
-    :root {
-        --primary-color: #00CC99;  /* Green */
-        --secondary-color: #EB2D8C; /* Pink */
-        --text-color: #262730;
-    }
-    
-    /* Style the buttons */
-    .stButton > button {
-        color: white;
-        border: 2px solid var(--primary-color);
-        padding: 0.5rem 1rem;
-        font-weight: bold;
-        transition: all 0.3s ease;
-    }
-    
-    .stButton > button:hover {
-        color: white;
-        border: 2px solid var(--secondary-color);
-    }
-    
-    /* Override Streamlit's default focus styles that make buttons red */
-    .stButton > button:focus, 
-    .stButton > button:focus:hover, 
-    .stButton > button:active, 
-    .stButton > button:active:hover {
-        color: white !important;
-        border: 2px solid var(--secondary-color) !important;
-        box-shadow: none !important;
-        outline: none !important;
-    }
-    
-    /* Style headers */
-    h1, h2, h3 {
-        color: var(--primary-color);
-    }
-    
-    /* Hide spans within h3 elements */
-    h1 span, h2 span, h3 span {
-        display: none !important;
-        visibility: hidden;
-        width: 0;
-        height: 0;
-        opacity: 0;
-        position: absolute;
-        overflow: hidden;
-    }
-    
-    /* Style code blocks */
-    pre {
-        border-left: 4px solid var(--primary-color);
-    }
-    
-    /* Style links */
-    a {
-        color: var(--secondary-color);
-    }
-    
-    /* Style the chat messages */
-    .stChatMessage {
-        border-left: 4px solid var(--secondary-color);
-    }
-    
-    /* Style the chat input */
-    .stChatInput > div {
-        border: 2px solid var(--primary-color) !important;
-    }
-    
-    /* Remove red outline on focus */
-    .stChatInput > div:focus-within {
-        box-shadow: none !important;
-        border: 2px solid var(--secondary-color) !important;
-        outline: none !important;
-    }
-    
-    /* Remove red outline on all inputs when focused */
-    input:focus, textarea:focus, [contenteditable]:focus {
-        box-shadow: none !important;
-        border-color: var(--secondary-color) !important;
-        outline: none !important;
-    }
+# Utilities and styles
+from utils.utils import get_clients
+from streamlit_pages.styles import load_css
 
-    </style>
-""", unsafe_allow_html=True)
+# Streamlit pages
+from streamlit_pages.intro import intro_tab
+from streamlit_pages.chat import chat_tab
+from streamlit_pages.environment import environment_tab
+from streamlit_pages.database import database_tab
+from streamlit_pages.documentation import documentation_tab
+from streamlit_pages.agent_service import agent_service_tab
+from streamlit_pages.mcp import mcp_tab
+from streamlit_pages.future_enhancements import future_enhancements_tab
 
-# Helper function to create a button that opens a tab in a new window
-def create_new_tab_button(label, tab_name, key=None, use_container_width=False):
-    """Create a button that opens a specified tab in a new browser window"""
-    # Create a unique key if none provided
-    if key is None:
-        key = f"new_tab_{tab_name.lower().replace(' ', '_')}"
-    
-    # Get the base URL
-    base_url = st.query_params.get("base_url", "")
-    if not base_url:
-        # If base_url is not in query params, use the default localhost URL
-        base_url = "http://localhost:8501"
-    
-    # Create the URL for the new tab
-    new_tab_url = f"{base_url}/?tab={tab_name}"
-    
-    # Create a button that will open the URL in a new tab when clicked
-    if st.button(label, key=key, use_container_width=use_container_width):
-        webbrowser.open_new_tab(new_tab_url)
+# Load environment variables from .env file
+load_dotenv()
 
-# Function to reload the archon_graph module
-def reload_archon_graph():
-    """Reload the archon_graph module to apply new environment variables"""
-    try:
-        # First reload pydantic_ai_coder
-        import archon.pydantic_ai_coder
-        importlib.reload(archon.pydantic_ai_coder)
-        
-        # Then reload archon_graph which imports pydantic_ai_coder
-        import archon.archon_graph
-        importlib.reload(archon.archon_graph)
-        
-        st.success("Successfully reloaded Archon modules with new environment variables!")
-        return True
-    except Exception as e:
-        st.error(f"Error reloading Archon modules: {str(e)}")
-        return False
-    
+# Initialize clients
+openai_client, supabase = get_clients()
+
+# Load custom CSS styles
+load_css()
+
 # Configure logfire to suppress warnings (optional)
 logfire.configure(send_to_logfire='never')
 
@@ -1284,10 +1120,10 @@ async def main():
         agent_service_tab()
     elif st.session_state.selected_tab == "Database":
         st.title("Archon - Database Configuration")
-        database_tab()
+        database_tab(supabase)
     elif st.session_state.selected_tab == "Documentation":
         st.title("Archon - Documentation")
-        documentation_tab()
+        documentation_tab(supabase)
     elif st.session_state.selected_tab == "Future Enhancements":
         st.title("Archon - Future Enhancements")
         future_enhancements_tab()
