@@ -60,6 +60,7 @@ RUN playwright install chromium
 # Copy server code, agent work orders, and tests
 COPY src/server/ src/server/
 COPY src/agent_work_orders/ src/agent_work_orders/
+COPY src/workers/ src/workers/
 COPY src/__init__.py src/
 COPY tests/ tests/
 

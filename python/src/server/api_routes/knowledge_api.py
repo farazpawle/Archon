@@ -196,8 +196,59 @@ async def get_crawl_progress(progress_id: str):
         safe_logfire_info(f"Crawl progress requested | progress_id={progress_id} | found={progress_data is not None}")
 
         if not progress_data:
-            # Return 404 if no progress exists - this is correct behavior
-            raise HTTPException(status_code=404, detail={"error": f"No progress found for ID: {progress_id}"})
+            # Fallback: Check database for queued/running/completed jobs
+            # This handles server restarts or worker-processed jobs
+            supabase = get_supabase_client()
+            
+            # Check crawl_jobs table
+            job_response = supabase.table("crawl_jobs").select("*").eq("id", progress_id).execute()
+            
+            if job_response.data:
+                job = job_response.data[0]
+                status = job["status"]
+                
+                # Map DB status to progress data
+                progress_data = {
+                    "progress_id": progress_id,
+                    "type": "crawl",
+                    "status": status,
+                    "progress": 0,
+                    "log": f"Job is {status}"
+                }
+                
+                if status == "pending":
+                    progress_data["progress"] = 0
+                    progress_data["log"] = "Waiting for worker..."
+                elif status == "processing":
+                    # Try to get more details from crawl_states
+                    state_response = supabase.table("crawl_states").select("*").eq("job_id", progress_id).execute()
+                    if state_response.data:
+                        state = state_response.data[0]
+                        visited = len(state.get("visited_urls", []))
+                        pending = len(state.get("pending_urls", []))
+                        total = visited + pending
+                        if total > 0:
+                            progress_data["progress"] = int((visited / total) * 100)
+                            progress_data["processedPages"] = visited
+                            progress_data["totalPages"] = total
+                            progress_data["log"] = f"Processed {visited} pages..."
+                    else:
+                        progress_data["progress"] = 10 # Started but no state yet
+                        progress_data["log"] = "Worker started processing..."
+                        
+                elif status == "completed":
+                    progress_data["progress"] = 100
+                    progress_data["log"] = "Crawl completed successfully"
+                    progress_data["status"] = "completed"
+                    
+                elif status == "failed":
+                    progress_data["status"] = "failed"
+                    progress_data["error"] = job.get("error_message", "Unknown error")
+                    progress_data["log"] = f"Failed: {progress_data['error']}"
+            
+            else:
+                # Return 404 if no progress exists - this is correct behavior
+                raise HTTPException(status_code=404, detail={"error": f"No progress found for ID: {progress_id}"})
 
         # Ensure we have the progress_id in the data
         progress_data["progress_id"] = progress_id
@@ -749,36 +800,45 @@ async def crawl_knowledge_item(request: KnowledgeItemRequest):
         safe_logfire_info(
             f"Starting knowledge item crawl | url={str(request.url)} | knowledge_type={request.knowledge_type} | tags={request.tags}"
         )
-        # Generate unique progress ID
-        progress_id = str(uuid.uuid4())
+        
+        # Prepare payload
+        payload = {
+            "url": str(request.url),
+            "knowledge_type": request.knowledge_type,
+            "tags": request.tags or [],
+            "max_depth": request.max_depth,
+            "extract_code_examples": request.extract_code_examples,
+            "generate_summary": True,
+        }
+        
+        # Insert into crawl_jobs queue
+        supabase = get_supabase_client()
+        response = supabase.table("crawl_jobs").insert({
+            "payload": payload,
+            "status": "pending",
+            "priority": 0
+        }).execute()
+        
+        if not response.data:
+            raise Exception("Failed to enqueue crawl job")
+            
+        job_id = response.data[0]["id"]
+        progress_id = job_id # Use job_id as progress_id
 
-        # Initialize progress tracker IMMEDIATELY so it's available for polling
+        # Initialize progress tracker for immediate feedback (optional, but good for UI)
         from ..utils.progress.progress_tracker import ProgressTracker
         tracker = ProgressTracker(progress_id, operation_type="crawl")
-
-        # Detect crawl type from URL
-        url_str = str(request.url)
-        crawl_type = "normal"
-        if "sitemap.xml" in url_str:
-            crawl_type = "sitemap"
-        elif url_str.endswith(".txt"):
-            crawl_type = "llms-txt" if "llms" in url_str.lower() else "text_file"
-
         await tracker.start({
-            "url": url_str,
-            "current_url": url_str,
-            "crawl_type": crawl_type,
-            # Don't override status - let tracker.start() set it to "starting"
+            "url": str(request.url),
+            "status": "pending",
             "progress": 0,
-            "log": f"Starting crawl for {request.url}"
+            "log": f"Queued crawl for {request.url}"
         })
 
-        # Start background task - no need to track this wrapper task
-        # The actual crawl task will be stored inside _perform_crawl_with_progress
-        asyncio.create_task(_perform_crawl_with_progress(progress_id, request, tracker))
         safe_logfire_info(
-            f"Crawl started successfully | progress_id={progress_id} | url={str(request.url)}"
+            f"Crawl queued successfully | job_id={job_id} | url={str(request.url)}"
         )
+        
         # Create a proper response that will be converted to camelCase
         from pydantic import BaseModel, Field
 
@@ -794,7 +854,7 @@ async def crawl_knowledge_item(request: KnowledgeItemRequest):
         response = CrawlStartResponse(
             success=True,
             progress_id=progress_id,
-            message="Crawling started",
+            message="Crawling queued",
             estimated_duration="3-5 minutes"
         )
 
@@ -1312,7 +1372,22 @@ async def stop_crawl_task(progress_id: str):
         # Step 3: Remove from active orchestrations registry
         await unregister_orchestration(progress_id)
 
-        # Step 4: Update progress tracker to reflect cancellation (only if we found and cancelled something)
+        # Step 4: Cancel in Database (for queued/worker jobs)
+        supabase = get_supabase_client()
+        # Check if job exists and is not already completed/failed
+        job_response = supabase.table("crawl_jobs").select("status").eq("id", progress_id).execute()
+        if job_response.data:
+            current_status = job_response.data[0]["status"]
+            if current_status in ["pending", "processing"]:
+                # Update status to failed (cancelled)
+                supabase.table("crawl_jobs").update({
+                    "status": "failed",
+                    "error_message": "Cancelled by user",
+                    "completed_at": datetime.now(timezone.utc).isoformat()
+                }).eq("id", progress_id).execute()
+                found = True
+
+        # Step 5: Update progress tracker to reflect cancellation (only if we found and cancelled something)
         if found:
             try:
                 from ..utils.progress.progress_tracker import ProgressTracker
@@ -1345,5 +1420,61 @@ async def stop_crawl_task(progress_id: str):
     except Exception as e:
         safe_logfire_error(
             f"Failed to stop crawl task | error={str(e)} | progress_id={progress_id}"
+        )
+        raise HTTPException(status_code=500, detail={"error": str(e)})
+
+
+@router.post("/knowledge-items/pause/{progress_id}")
+async def pause_crawl_task(progress_id: str):
+    """Pause a running crawl task."""
+    try:
+        from ..services.crawling import get_active_orchestration
+
+        safe_logfire_info(f"Pause crawl requested | progress_id={progress_id}")
+
+        orchestration = await get_active_orchestration(progress_id)
+        if orchestration:
+            orchestration.pause()
+            return {
+                "success": True,
+                "message": "Crawl task paused successfully",
+                "progressId": progress_id,
+            }
+        else:
+            raise HTTPException(status_code=404, detail={"error": "No active task for given progress_id"})
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        safe_logfire_error(
+            f"Failed to pause crawl task | error={str(e)} | progress_id={progress_id}"
+        )
+        raise HTTPException(status_code=500, detail={"error": str(e)})
+
+
+@router.post("/knowledge-items/resume/{progress_id}")
+async def resume_crawl_task(progress_id: str):
+    """Resume a paused crawl task."""
+    try:
+        from ..services.crawling import get_active_orchestration
+
+        safe_logfire_info(f"Resume crawl requested | progress_id={progress_id}")
+
+        orchestration = await get_active_orchestration(progress_id)
+        if orchestration:
+            orchestration.resume()
+            return {
+                "success": True,
+                "message": "Crawl task resumed successfully",
+                "progressId": progress_id,
+            }
+        else:
+            raise HTTPException(status_code=404, detail={"error": "No active task for given progress_id"})
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        safe_logfire_error(
+            f"Failed to resume crawl task | error={str(e)} | progress_id={progress_id}"
         )
         raise HTTPException(status_code=500, detail={"error": str(e)})

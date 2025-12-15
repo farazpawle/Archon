@@ -24,7 +24,7 @@ async def add_documents_to_supabase(
     progress_callback: Any | None = None,
     enable_parallel_batches: bool = True,
     provider: str | None = None,
-    cancellation_check: Any | None = None,
+    status_check: Any | None = None,
     url_to_page_id: dict[str, str] | None = None,
 ) -> dict[str, int]:
     """
@@ -42,6 +42,7 @@ async def add_documents_to_supabase(
         batch_size: Size of each batch for insertion
         progress_callback: Optional async callback function for progress reporting
         provider: Optional provider override for embeddings
+        status_check: Optional async function to check for cancellation or pause
     """
     with safe_span(
         "add_documents_to_supabase", total_documents=len(contents), batch_size=batch_size
@@ -85,10 +86,10 @@ async def add_documents_to_supabase(
             if unique_urls:
                 # Delete in configured batch sizes
                 for i in range(0, len(unique_urls), delete_batch_size):
-                    # Check for cancellation before each delete batch
-                    if cancellation_check:
+                    # Check for status (pause/cancel) before each delete batch
+                    if status_check:
                         try:
-                            cancellation_check()
+                            await status_check()
                         except asyncio.CancelledError:
                             if progress_callback:
                                 await progress_callback(
@@ -114,10 +115,10 @@ async def add_documents_to_supabase(
             failed_urls = []
             fallback_batch_size = max(1, min(10, delete_batch_size // 5))
             for i in range(0, len(unique_urls), fallback_batch_size):
-                # Check for cancellation before each fallback delete batch
-                if cancellation_check:
+                # Check for status (pause/cancel) before each fallback delete batch
+                if status_check:
                     try:
-                        cancellation_check()
+                        await status_check()
                     except asyncio.CancelledError:
                         if progress_callback:
                             await progress_callback(
@@ -161,10 +162,10 @@ async def add_documents_to_supabase(
 
         # Process in batches to avoid memory issues
         for batch_num, i in enumerate(range(0, len(contents), batch_size), 1):
-            # Check for cancellation before each batch
-            if cancellation_check:
+            # Check for status (pause/cancel) before each batch
+            if status_check:
                 try:
-                    cancellation_check()
+                    await status_check()
                 except asyncio.CancelledError:
                     if progress_callback:
                         await progress_callback(
@@ -243,10 +244,10 @@ async def add_documents_to_supabase(
                     successful_count = 0
 
                     for ctx_i in range(0, len(batch_contents), contextual_batch_size):
-                        # Check for cancellation before each contextual sub-batch
-                        if cancellation_check:
+                        # Check for status (pause/cancel) before each contextual sub-batch
+                        if status_check:
                             try:
-                                cancellation_check()
+                                await status_check()
                             except asyncio.CancelledError:
                                 if progress_callback:
                                     await progress_callback(
@@ -423,10 +424,10 @@ async def add_documents_to_supabase(
             retry_delay = 1.0
 
             for retry in range(max_retries):
-                # Check for cancellation before each retry attempt
-                if cancellation_check:
+                # Check for status (pause/cancel) before each retry attempt
+                if status_check:
                     try:
-                        cancellation_check()
+                        await status_check()
                     except asyncio.CancelledError:
                         if progress_callback:
                             await progress_callback(
@@ -481,10 +482,10 @@ async def add_documents_to_supabase(
                         # Try individual inserts as last resort
                         successful_inserts = 0
                         for record in batch_data:
-                            # Check for cancellation before each individual insert
-                            if cancellation_check:
+                            # Check for status (pause/cancel) before each individual insert
+                            if status_check:
                                 try:
-                                    cancellation_check()
+                                    await status_check()
                                 except asyncio.CancelledError:
                                     if progress_callback:
                                         await progress_callback(

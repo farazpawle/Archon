@@ -41,7 +41,7 @@ class RecursiveCrawlStrategy:
         max_depth: int = 3,
         max_concurrent: int | None = None,
         progress_callback: Callable[..., Awaitable[None]] | None = None,
-        cancellation_check: Callable[[], None] | None = None,
+        status_check: Callable[[], Awaitable[None]] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Recursively crawl internal links from start URLs up to a maximum depth with progress reporting.
@@ -53,7 +53,7 @@ class RecursiveCrawlStrategy:
             max_depth: Maximum crawl depth
             max_concurrent: Maximum concurrent crawls
             progress_callback: Optional callback for progress updates
-            cancellation_check: Optional function to check for cancellation
+            status_check: Optional async function to check for cancellation or pause
 
         Returns:
             List of crawl results
@@ -167,10 +167,10 @@ class RecursiveCrawlStrategy:
         cancelled = False
 
         for depth in range(max_depth):
-            # Check for cancellation at the start of each depth level
-            if cancellation_check:
+            # Check for status (pause/cancel) at the start of each depth level
+            if status_check:
                 try:
-                    cancellation_check()
+                    await status_check()
                 except asyncio.CancelledError:
                     cancelled = True
                     await report_progress(
@@ -182,7 +182,7 @@ class RecursiveCrawlStrategy:
                     )
                     break
                 except Exception:
-                    logger.exception("Unexpected error from cancellation_check()")
+                    logger.exception("Unexpected error from status_check()")
                     raise
 
             urls_to_crawl = [
@@ -207,15 +207,15 @@ class RecursiveCrawlStrategy:
             depth_successful = 0
 
             for batch_idx in range(0, len(urls_to_crawl), batch_size):
-                # Check for cancellation before processing each batch
-                if cancellation_check:
+                # Check for status (pause/cancel) before processing each batch
+                if status_check:
                     try:
-                        cancellation_check()
+                        await status_check()
                     except asyncio.CancelledError:
                         cancelled = True
                         break
                     except Exception:
-                        logger.exception("Unexpected error from cancellation_check()")
+                        logger.exception("Unexpected error from status_check()")
                         raise
 
                 batch_urls = urls_to_crawl[batch_idx : batch_idx + batch_size]
@@ -251,10 +251,10 @@ class RecursiveCrawlStrategy:
                 # Handle streaming results from arun_many
                 i = 0
                 async for result in batch_results:
-                    # Check for cancellation during streaming results
-                    if cancellation_check:
+                    # Check for status (pause/cancel) during streaming results
+                    if status_check:
                         try:
-                            cancellation_check()
+                            await status_check()
                         except asyncio.CancelledError:
                             cancelled = True
                             await report_progress(
@@ -266,7 +266,7 @@ class RecursiveCrawlStrategy:
                             )
                             break
                         except Exception:
-                            logger.exception("Unexpected error from cancellation_check()")
+                            logger.exception("Unexpected error from status_check()")
                             raise
 
                     # Map back to original URL using the mapping dict

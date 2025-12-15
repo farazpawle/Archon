@@ -6,7 +6,7 @@ Extracted from crawl_orchestration_service.py for better modularity.
 """
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Awaitable
 from typing import Any
 
 from ...config.logfire_config import get_logger, safe_logfire_error, safe_logfire_info
@@ -41,7 +41,7 @@ class DocumentStorageOperations:
         crawl_type: str,
         original_source_id: str,
         progress_callback: Callable | None = None,
-        cancellation_check: Callable | None = None,
+        status_check: Callable[[], Awaitable[None]] | None = None,
         source_url: str | None = None,
         source_display_name: str | None = None,
         url_to_page_id: dict[str, str] | None = None,
@@ -55,7 +55,7 @@ class DocumentStorageOperations:
             crawl_type: Type of crawl performed
             original_source_id: The source ID for all documents
             progress_callback: Optional callback for progress updates
-            cancellation_check: Optional function to check for cancellation
+            status_check: Optional async function to check for cancellation or pause
             source_url: Optional original URL that was crawled
             source_display_name: Optional human-readable name for the source
 
@@ -76,10 +76,10 @@ class DocumentStorageOperations:
 
         # Process and chunk each document
         for doc_index, doc in enumerate(crawl_results):
-            # Check for cancellation during document processing
-            if cancellation_check:
+            # Check for status (pause/cancel) during document processing
+            if status_check:
                 try:
-                    cancellation_check()
+                    await status_check()
                 except asyncio.CancelledError:
                     if progress_callback:
                         await progress_callback(
@@ -112,10 +112,10 @@ class DocumentStorageOperations:
 
             # Process each chunk
             for i, chunk in enumerate(chunks):
-                # Check for cancellation during chunk processing
-                if cancellation_check and i % 10 == 0:  # Check every 10 chunks
+                # Check for status (pause/cancel) during chunk processing
+                if status_check and i % 10 == 0:  # Check every 10 chunks
                     try:
-                        cancellation_check()
+                        await status_check()
                     except asyncio.CancelledError:
                         if progress_callback:
                             await progress_callback(

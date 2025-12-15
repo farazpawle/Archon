@@ -69,6 +69,31 @@ services:
       retries: 3
       start_period: 40s
 
+  # Worker Service (Background Crawling)
+  archon-worker:
+    build:
+      context: ./python
+      dockerfile: Dockerfile.server
+      args:
+        BUILDKIT_INLINE_CACHE: 1
+    container_name: archon-worker
+    environment:
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - LOGFIRE_TOKEN=${LOGFIRE_TOKEN:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    networks:
+      - app-network
+    volumes:
+      - ./python/src:/app/src # Mount source code for hot reload
+    command: ["python", "-m", "src.workers.supervisor"]
+    depends_on:
+      archon-server:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
   # Lightweight MCP Server Service (HTTP-based)
   archon-mcp:
     build:

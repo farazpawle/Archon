@@ -10,6 +10,7 @@ import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any, Optional
+from datetime import datetime, timezone
 
 import tldextract
 
@@ -139,6 +140,9 @@ class CrawlingService:
         self.progress_mapper = ProgressMapper()
         # Cancellation support
         self._cancelled = False
+        # Pause support
+        self._pause_event = asyncio.Event()
+        self._pause_event.set()  # Initially set (not paused)
 
     def set_progress_id(self, progress_id: str):
         """Set the progress ID for HTTP polling updates."""
@@ -151,7 +155,29 @@ class CrawlingService:
     def cancel(self):
         """Cancel the crawl operation."""
         self._cancelled = True
+        # Ensure we unpause if paused so we can process cancellation
+        self._pause_event.set()
         safe_logfire_info(f"Crawl operation cancelled | progress_id={self.progress_id}")
+
+    def pause(self):
+        """Pause the crawl operation."""
+        if self._pause_event.is_set():
+            self._pause_event.clear()
+            safe_logfire_info(f"Crawl operation paused | progress_id={self.progress_id}")
+            if self.progress_tracker:
+                # We can update status to paused, but we need to be careful about restoring it
+                # For now, we'll rely on the log message and the fact that progress stops
+                pass
+
+    def resume(self):
+        """Resume the crawl operation."""
+        if not self._pause_event.is_set():
+            self._pause_event.set()
+            safe_logfire_info(f"Crawl operation resumed | progress_id={self.progress_id}")
+
+    def is_paused(self) -> bool:
+        """Check if the crawl operation is paused."""
+        return not self._pause_event.is_set()
 
     def is_cancelled(self) -> bool:
         """Check if the crawl operation has been cancelled."""
@@ -159,6 +185,36 @@ class CrawlingService:
 
     def _check_cancellation(self):
         """Check if cancelled and raise an exception if so."""
+        if self._cancelled:
+            raise asyncio.CancelledError("Crawl operation was cancelled by user")
+
+    async def _check_status(self):
+        """Check if cancelled or paused. Waits if paused."""
+        if self._cancelled:
+            raise asyncio.CancelledError("Crawl operation was cancelled by user")
+        
+        if not self._pause_event.is_set():
+            safe_logfire_info(f"Crawl paused, waiting for resume | progress_id={self.progress_id}")
+            # Update tracker to show paused state
+            if self.progress_tracker:
+                await self.progress_tracker.update(
+                    status="paused",
+                    progress=self.progress_tracker.state.get("progress", 0),
+                    log="Crawl paused by user"
+                )
+            
+            await self._pause_event.wait()
+            
+            safe_logfire_info(f"Crawl resumed | progress_id={self.progress_id}")
+            # Update tracker to show resuming
+            if self.progress_tracker:
+                await self.progress_tracker.update(
+                    status="resuming",
+                    progress=self.progress_tracker.state.get("progress", 0),
+                    log="Crawl resumed"
+                )
+        
+        # Check cancellation again after resume
         if self._cancelled:
             raise asyncio.CancelledError("Crawl operation was cancelled by user")
 
@@ -240,9 +296,9 @@ class CrawlingService:
             end_progress,
         )
 
-    def parse_sitemap(self, sitemap_url: str) -> list[str]:
+    async def parse_sitemap(self, sitemap_url: str) -> list[str]:
         """Parse a sitemap and extract URLs."""
-        return self.sitemap_strategy.parse_sitemap(sitemap_url, self._check_cancellation)
+        return await self.sitemap_strategy.parse_sitemap(sitemap_url, self._check_status)
 
     async def crawl_batch_with_progress(
         self,
@@ -258,7 +314,7 @@ class CrawlingService:
             self.site_config.is_documentation_site,
             max_concurrent,
             progress_callback,
-            self._check_cancellation,  # Pass cancellation check
+            self._check_status,  # Pass async status check (pause/cancel)
             link_text_fallbacks,  # Pass link text fallbacks
         )
 
@@ -277,7 +333,7 @@ class CrawlingService:
             max_depth,
             max_concurrent,
             progress_callback,
-            self._check_cancellation,  # Pass cancellation check
+            self._check_status,  # Pass async status check (pause/cancel)
         )
 
     # Orchestration methods
@@ -383,8 +439,8 @@ class CrawlingService:
                 "starting", 100, f"Starting crawl of {url}", current_url=url
             )
 
-            # Check for cancellation before proceeding
-            self._check_cancellation()
+            # Check for status (pause/cancel) before proceeding
+            await self._check_status()
 
             # Discovery phase - find the single best related file
             discovered_urls = []
@@ -494,8 +550,8 @@ class CrawlingService:
                     crawl_type=crawl_type
                 )
 
-            # Check for cancellation after crawling
-            self._check_cancellation()
+            # Check for status (pause/cancel) after crawling
+            await self._check_status()
 
             # Send heartbeat after potentially long crawl operation
             await send_heartbeat_if_needed()
@@ -506,8 +562,8 @@ class CrawlingService:
             # Processing stage
             await update_mapped_progress("processing", 50, "Processing crawled content")
 
-            # Check for cancellation before document processing
-            self._check_cancellation()
+            # Check for status (pause/cancel) before document processing
+            await self._check_status()
 
             # Calculate total work units for accurate progress tracking
             total_pages = len(crawl_results)
@@ -574,8 +630,8 @@ class CrawlingService:
                     f"Updated progress tracker with source_id | progress_id={self.progress_id} | source_id={storage_results['source_id']}"
                 )
 
-            # Check for cancellation after document storage
-            self._check_cancellation()
+            # Check for status (pause/cancel) after document storage
+            await self._check_status()
 
             # Send heartbeat after document storage
             await send_heartbeat_if_needed()
@@ -594,8 +650,8 @@ class CrawlingService:
             # Extract code examples if requested
             code_examples_count = 0
             if request.get("extract_code_examples", True) and actual_chunks_stored > 0:
-                # Check for cancellation before starting code extraction
-                self._check_cancellation()
+                # Check for status (pause/cancel) before starting code extraction
+                await self._check_status()
 
                 await update_mapped_progress("code_extraction", 0, "Starting code extraction...")
 
@@ -663,8 +719,8 @@ class CrawlingService:
                             total_pages=total_pages,
                         )
 
-                # Check for cancellation after code extraction
-                self._check_cancellation()
+                # Check for status (pause/cancel) after code extraction
+                await self._check_status()
 
                 # Send heartbeat after code extraction
                 await send_heartbeat_if_needed()
@@ -1032,7 +1088,7 @@ class CrawlingService:
                 }]
                 return crawl_results, crawl_type
 
-            sitemap_urls = self.parse_sitemap(url)
+            sitemap_urls = await self.parse_sitemap(url)
 
             if sitemap_urls:
                 # Update progress before starting batch crawl
@@ -1068,6 +1124,76 @@ class CrawlingService:
             )
 
         return crawl_results, crawl_type
+
+
+    async def execute_crawl_job(self, request: dict[str, Any], job_id: str):
+        """
+        Execute a crawl job synchronously (awaited) and update the crawl_jobs table.
+        This is used by the worker process.
+        """
+        # 1. Setup Progress Reporting to DB
+        async def db_progress_callback(status: str, progress: int, message: str, **kwargs):
+            try:
+                now = datetime.now(timezone.utc).isoformat()
+                data = {
+                    "status": "processing", # Keep as processing until done
+                    "progress_percentage": progress,
+                    "last_heartbeat": now
+                }
+                # Only update if we have a valid job_id
+                if job_id:
+                    await self.supabase_client.table("crawl_jobs").update(data).eq("id", job_id).execute()
+            except Exception as e:
+                logger.error(f"Failed to report progress to DB: {e}")
+
+        # 2. Setup Checkpoint Callback
+        async def checkpoint_callback(visited_urls: list[str]):
+            try:
+                # First ensure state record exists
+                # Fetch current state
+                response = await self.supabase_client.table("crawl_states").select("visited_urls").eq("job_id", job_id).execute()
+                current_visited = []
+                if response.data:
+                    current_visited = response.data[0].get("visited_urls", [])
+                
+                # Merge
+                new_visited = list(set(current_visited + visited_urls))
+                
+                # Upsert
+                await self.supabase_client.table("crawl_states").upsert({
+                    "job_id": job_id,
+                    "visited_urls": new_visited,
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }).execute()
+                
+            except Exception as e:
+                logger.error(f"Failed to save checkpoint: {e}")
+
+        # 3. Inject callbacks into strategies
+        # We use a wrapper around batch_strategy.crawl_batch_with_progress
+        original_batch_crawl = self.batch_strategy.crawl_batch_with_progress
+        
+        async def wrapped_batch_crawl(*args, **kwargs):
+            kwargs["checkpoint_callback"] = checkpoint_callback
+            return await original_batch_crawl(*args, **kwargs)
+            
+        self.batch_strategy.crawl_batch_with_progress = wrapped_batch_crawl
+
+        # 4. Run the logic
+        # We reuse _async_orchestrate_crawl logic but we need to await it.
+        # We mock self.progress_tracker to call our db_progress_callback.
+        
+        class MockTracker:
+            async def update(self, status, progress, log, **kwargs):
+                await db_progress_callback(status, progress, log, **kwargs)
+            async def start(self, *args, **kwargs): pass
+            async def complete(self, *args, **kwargs): pass
+            async def error(self, *args, **kwargs): pass
+            
+        self.progress_tracker = MockTracker()
+        
+        # Now call the internal logic
+        await self._async_orchestrate_crawl(request, job_id)
 
 
 # Alias for backward compatibility

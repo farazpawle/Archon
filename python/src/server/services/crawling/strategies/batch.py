@@ -37,8 +37,9 @@ class BatchCrawlStrategy:
         is_documentation_site_func: Callable[[str], bool],
         max_concurrent: int | None = None,
         progress_callback: Callable[..., Awaitable[None]] | None = None,
-        cancellation_check: Callable[[], None] | None = None,
+        status_check: Callable[[], Awaitable[None]] | None = None,
         link_text_fallbacks: dict[str, str] | None = None,
+        checkpoint_callback: Callable[[list[str]], Awaitable[None]] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Batch crawl multiple URLs in parallel with progress reporting.
@@ -49,8 +50,9 @@ class BatchCrawlStrategy:
             is_documentation_site_func: Function to check if URL is a documentation site
             max_concurrent: Maximum concurrent crawls
             progress_callback: Optional callback for progress updates
-            cancellation_check: Optional function to check for cancellation
+            status_check: Optional async function to check for cancellation or pause
             link_text_fallbacks: Optional dict mapping URLs to link text for title fallback
+            checkpoint_callback: Optional callback to save state (visited URLs)
 
         Returns:
             List of crawl results
@@ -173,10 +175,10 @@ class BatchCrawlStrategy:
             url_mapping[transformed] = url
 
         for i in range(0, total_urls, batch_size):
-            # Check for cancellation before processing each batch
-            if cancellation_check:
+            # Check for status (pause/cancel) before processing each batch
+            if status_check:
                 try:
-                    cancellation_check()
+                    await status_check()
                 except asyncio.CancelledError:
                     cancelled = True
                     await report_progress(
@@ -213,10 +215,10 @@ class BatchCrawlStrategy:
 
             # Handle streaming results
             async for result in batch_results:
-                # Check for cancellation during streaming
-                if cancellation_check:
+                # Check for status (pause/cancel) during streaming
+                if status_check:
                     try:
-                        cancellation_check()
+                        await status_check()
                     except asyncio.CancelledError:
                         cancelled = True
                         await report_progress(
@@ -229,7 +231,7 @@ class BatchCrawlStrategy:
                         )
                         break
                     except Exception:
-                        logger.exception("Unexpected error from cancellation_check()")
+                        logger.exception("Unexpected error from status_check()")
                         raise
 
                 processed += 1
@@ -261,6 +263,14 @@ class BatchCrawlStrategy:
                         "html": result.html,  # Use raw HTML
                         "title": title,
                     })
+                    
+                    # Checkpoint: Save visited URL
+                    if checkpoint_callback:
+                        try:
+                            await checkpoint_callback([original_url])
+                        except Exception as e:
+                            logger.warning(f"Checkpoint failed: {e}")
+                            
                 else:
                     logger.warning(
                         f"Failed to crawl {result.url}: {getattr(result, 'error_message', 'Unknown error')}"
