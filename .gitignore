@@ -1,5 +1,6 @@
 __pycache__
 .env
+aaa.txt
 .serena
 .claude/settings.local.json
 PRPs/local
