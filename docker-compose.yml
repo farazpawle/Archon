@@ -30,6 +30,7 @@ services:
       - AGENT_WORK_ORDERS_PORT=${AGENT_WORK_ORDERS_PORT:-8053}
       - AGENTS_ENABLED=${AGENTS_ENABLED:-false}
       - ARCHON_HOST=${HOST:-localhost}
+      - MCP_HEALTH_CHECK_TIMEOUT=10
     networks:
       - app-network
     volumes:

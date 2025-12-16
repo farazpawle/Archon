@@ -146,7 +146,7 @@ def register_document_tools(mcp: FastMCP):
         document_id: str | None = None,
         title: str | None = None,
         document_type: str | None = None,
-        content: dict[str, Any] | None = None,
+        content: Any = None,
         tags: list[str] | None = None,
         author: str | None = None,
     ) -> str:

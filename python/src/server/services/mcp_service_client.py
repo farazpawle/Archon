@@ -6,6 +6,7 @@ other services (API and Agents) instead of importing their modules directly.
 """
 
 import uuid
+import os
 from typing import Any
 from urllib.parse import urljoin
 
@@ -211,12 +212,14 @@ class MCPServiceClient:
             mcp_logger.warning(f"API service health check failed: {e}")
 
         # Check Agents service
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
-                response = await client.get(urljoin(self.agents_url, "/health"))
-                health_status["agents_service"] = response.status_code == 200
-        except Exception:
-            pass
+        agents_enabled = os.getenv("AGENTS_ENABLED", "false").lower() == "true"
+        if agents_enabled:
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+                    response = await client.get(urljoin(self.agents_url, "/health"))
+                    health_status["agents_service"] = response.status_code == 200
+            except Exception:
+                pass
 
         return health_status
 

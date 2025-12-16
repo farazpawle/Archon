@@ -23,6 +23,31 @@ import type {
 } from "../types";
 import { getProviderErrorMessage } from "../utils/providerErrorHandler";
 
+// Context types for mutations
+type CrawlContext = {
+  previousKnowledge?: KnowledgeItem[];
+  previousSummaries?: Array<[readonly unknown[], KnowledgeItemsResponse | undefined]>;
+  previousOperations?: ActiveOperationsResponse;
+  tempProgressId: string;
+  tempItemId: string;
+};
+
+type UploadContext = {
+  previousSummaries?: Array<[readonly unknown[], KnowledgeItemsResponse | undefined]>;
+  previousOperations?: ActiveOperationsResponse;
+  tempProgressId: string;
+  tempItemId: string;
+};
+
+type DeleteContext = {
+  previousEntries: Array<[readonly unknown[], KnowledgeItemsResponse | undefined]>;
+};
+
+type UpdateContext = {
+  previousItem: KnowledgeItem | undefined;
+  previousSummaries: Array<[readonly unknown[], KnowledgeItemsResponse | undefined]> | undefined;
+};
+
 // Query keys factory for better organization and type safety
 export const knowledgeKeys = {
   all: ["knowledge"] as const,
@@ -105,16 +130,10 @@ export function useCrawlUrl() {
     CrawlStartResponse,
     Error,
     CrawlRequest,
-    {
-      previousKnowledge?: KnowledgeItem[];
-      previousSummaries?: Array<[readonly unknown[], KnowledgeItemsResponse | undefined]>;
-      previousOperations?: ActiveOperationsResponse;
-      tempProgressId: string;
-      tempItemId: string;
-    }
+    CrawlContext
   >({
     mutationFn: (request: CrawlRequest) => knowledgeService.crawlUrl(request),
-    onMutate: async (request) => {
+    onMutate: async (request: CrawlRequest) => {
       // Cancel any outgoing refetches to prevent race conditions
       await queryClient.cancelQueries({ queryKey: knowledgeKeys.summariesPrefix() });
       await queryClient.cancelQueries({ queryKey: progressKeys.active() });
@@ -214,7 +233,7 @@ export function useCrawlUrl() {
       };
 
       // Add optimistic operation to active operations
-      queryClient.setQueryData<ActiveOperationsResponse>(progressKeys.active(), (old) => {
+      queryClient.setQueryData<ActiveOperationsResponse>(progressKeys.active(), (old: ActiveOperationsResponse | undefined) => {
         if (!old) {
           return {
             operations: [optimisticOperation],
@@ -232,11 +251,11 @@ export function useCrawlUrl() {
       // Return context for rollback and replacement
       return { previousSummaries, previousOperations, tempProgressId, tempItemId: tempProgressId };
     },
-    onSuccess: (response, _variables, context) => {
+    onSuccess: (response: CrawlStartResponse, _variables: CrawlRequest, context: CrawlContext | undefined) => {
       // Replace temporary IDs with real ones from the server
       if (context) {
         // Update summaries cache with real progress ID
-        queryClient.setQueriesData<KnowledgeItemsResponse>({ queryKey: knowledgeKeys.summariesPrefix() }, (old) => {
+        queryClient.setQueriesData<KnowledgeItemsResponse>({ queryKey: knowledgeKeys.summariesPrefix() }, (old: KnowledgeItemsResponse | undefined) => {
           if (!old) return old;
           return {
             ...old,
@@ -253,7 +272,7 @@ export function useCrawlUrl() {
         });
 
         // Update progress operation with real progress ID
-        queryClient.setQueryData<ActiveOperationsResponse>(progressKeys.active(), (old) => {
+        queryClient.setQueryData<ActiveOperationsResponse>(progressKeys.active(), (old: ActiveOperationsResponse | undefined) => {
           if (!old) return old;
           return {
             ...old,
@@ -281,7 +300,7 @@ export function useCrawlUrl() {
       // Return the response so caller can access progressId
       return response;
     },
-    onError: (error, _variables, context) => {
+    onError: (error: Error, _variables: CrawlRequest, context: CrawlContext | undefined) => {
       // Rollback optimistic updates on error
       if (context?.previousSummaries) {
         // Rollback all summary queries
@@ -310,15 +329,11 @@ export function useUploadDocument() {
     { progressId: string; message: string },
     Error,
     { file: File; metadata: UploadMetadata },
-    {
-      previousSummaries?: Array<[readonly unknown[], KnowledgeItemsResponse | undefined]>;
-      previousOperations?: ActiveOperationsResponse;
-      tempProgressId: string;
-    }
+    UploadContext
   >({
     mutationFn: ({ file, metadata }: { file: File; metadata: UploadMetadata }) =>
       knowledgeService.uploadDocument(file, metadata),
-    onMutate: async ({ file, metadata }) => {
+    onMutate: async ({ file, metadata }: { file: File; metadata: UploadMetadata }) => {
       // Cancel any outgoing refetches to prevent race conditions
       await queryClient.cancelQueries({ queryKey: knowledgeKeys.summariesPrefix() });
       await queryClient.cancelQueries({ queryKey: progressKeys.active() });
@@ -396,7 +411,7 @@ export function useUploadDocument() {
       };
 
       // Add optimistic operation to active operations
-      queryClient.setQueryData<ActiveOperationsResponse>(progressKeys.active(), (old) => {
+      queryClient.setQueryData<ActiveOperationsResponse>(progressKeys.active(), (old: ActiveOperationsResponse | undefined) => {
         if (!old) {
           return {
             operations: [optimisticOperation],
@@ -413,11 +428,11 @@ export function useUploadDocument() {
 
       return { previousSummaries, previousOperations, tempProgressId, tempItemId: tempProgressId };
     },
-    onSuccess: (response, _variables, context) => {
+    onSuccess: (response: { progressId: string; message: string }, _variables: { file: File; metadata: UploadMetadata }, context: UploadContext | undefined) => {
       // Replace temporary IDs with real ones from the server
       if (context && response?.progressId) {
         // Update summaries cache with real progress ID
-        queryClient.setQueriesData<KnowledgeItemsResponse>({ queryKey: knowledgeKeys.summariesPrefix() }, (old) => {
+        queryClient.setQueriesData<KnowledgeItemsResponse>({ queryKey: knowledgeKeys.summariesPrefix() }, (old: KnowledgeItemsResponse | undefined) => {
           if (!old) return old;
           return {
             ...old,
@@ -434,7 +449,7 @@ export function useUploadDocument() {
         });
 
         // Update progress operation with real progress ID
-        queryClient.setQueryData<ActiveOperationsResponse>(progressKeys.active(), (old) => {
+        queryClient.setQueryData<ActiveOperationsResponse>(progressKeys.active(), (old: ActiveOperationsResponse | undefined) => {
           if (!old) return old;
           return {
             ...old,
@@ -461,7 +476,7 @@ export function useUploadDocument() {
       // Don't show success here - upload is just starting in background
       // Success/failure will be shown via progress polling
     },
-    onError: (error, _variables, context) => {
+    onError: (error: Error, _variables: { file: File; metadata: UploadMetadata }, context: UploadContext | undefined) => {
       // Rollback optimistic updates on error
       if (context?.previousSummaries) {
         for (const [queryKey, data] of context.previousSummaries) {
@@ -487,10 +502,10 @@ export function useStopCrawl() {
 
   return useMutation({
     mutationFn: (progressId: string) => knowledgeService.stopCrawl(progressId),
-    onSuccess: (_data, progressId) => {
+    onSuccess: (_data: unknown, progressId: string) => {
       showToast(`Stop requested (${progressId}). Operation will end shortly.`, "info");
     },
-    onError: (error, progressId) => {
+    onError: (error: Error, progressId: string) => {
       // If it's a 404, the operation might have already completed or been cancelled
       // See PRPs/local/frontend-state-management-refactor.md Phase 4: Configure Request Deduplication
       const is404Error =
@@ -516,10 +531,10 @@ export function usePauseCrawl() {
 
   return useMutation({
     mutationFn: (progressId: string) => knowledgeService.pauseCrawl(progressId),
-    onSuccess: (_data, progressId) => {
+    onSuccess: (_data: unknown, progressId: string) => {
       showToast(`Pause requested (${progressId}).`, "info");
     },
-    onError: (error, progressId) => {
+    onError: (error: Error, progressId: string) => {
       const errorMessage = error instanceof Error ? error.message : "Unknown error";
       showToast(`Failed to pause crawl (${progressId}): ${errorMessage}`, "error");
     },
@@ -534,10 +549,10 @@ export function useResumeCrawl() {
 
   return useMutation({
     mutationFn: (progressId: string) => knowledgeService.resumeCrawl(progressId),
-    onSuccess: (_data, progressId) => {
+    onSuccess: (_data: unknown, progressId: string) => {
       showToast(`Resume requested (${progressId}).`, "info");
     },
-    onError: (error, progressId) => {
+    onError: (error: Error, progressId: string) => {
       const errorMessage = error instanceof Error ? error.message : "Unknown error";
       showToast(`Failed to resume crawl (${progressId}): ${errorMessage}`, "error");
     },
@@ -553,7 +568,7 @@ export function useDeleteKnowledgeItem() {
 
   return useMutation({
     mutationFn: (sourceId: string) => knowledgeService.deleteKnowledgeItem(sourceId),
-    onMutate: async (sourceId) => {
+    onMutate: async (sourceId: string) => {
       // Cancel summary queries (all filters)
       await queryClient.cancelQueries({ queryKey: knowledgeKeys.summariesPrefix() });
 
@@ -566,7 +581,7 @@ export function useDeleteKnowledgeItem() {
       // Optimistically remove the item from each cached summary
       for (const [queryKey, data] of previousEntries) {
         if (!data) continue;
-        const nextItems = data.items.filter((item) => item.source_id !== sourceId);
+        const nextItems = data.items.filter((item: KnowledgeItem) => item.source_id !== sourceId);
         const removed = data.items.length - nextItems.length;
         queryClient.setQueryData<KnowledgeItemsResponse>(queryKey, {
           ...data,
@@ -577,7 +592,7 @@ export function useDeleteKnowledgeItem() {
 
       return { previousEntries };
     },
-    onError: (error, _sourceId, context) => {
+    onError: (error: Error, _sourceId: string, context: DeleteContext | undefined) => {
       // Roll back all summaries
       for (const [queryKey, data] of context?.previousEntries ?? []) {
         queryClient.setQueryData(queryKey, data);
@@ -586,7 +601,7 @@ export function useDeleteKnowledgeItem() {
       const errorMessage = error instanceof Error ? error.message : "Failed to delete item";
       showToast(errorMessage, "error");
     },
-    onSuccess: (data) => {
+    onSuccess: (data: any) => {
       showToast(data.message || "Item deleted successfully", "success");
 
       // Invalidate summaries to reconcile with server
@@ -604,17 +619,24 @@ export function useUpdateKnowledgeItem() {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
 
-  return useMutation({
+  return useMutation<
+    KnowledgeItem,
+    Error,
+    { sourceId: string; updates: Partial<KnowledgeItem> & { tags?: string[] } },
+    UpdateContext
+  >({
     mutationFn: ({ sourceId, updates }: { sourceId: string; updates: Partial<KnowledgeItem> & { tags?: string[] } }) =>
       knowledgeService.updateKnowledgeItem(sourceId, updates),
-    onMutate: async ({ sourceId, updates }) => {
+    onMutate: async ({ sourceId, updates }: { sourceId: string; updates: Partial<KnowledgeItem> & { tags?: string[] } }) => {
       // Cancel any outgoing refetches
       await queryClient.cancelQueries({ queryKey: knowledgeKeys.detail(sourceId) });
       await queryClient.cancelQueries({ queryKey: knowledgeKeys.summariesPrefix() });
 
       // Snapshot the previous values
       const previousItem = queryClient.getQueryData<KnowledgeItem>(knowledgeKeys.detail(sourceId));
-      const previousSummaries = queryClient.getQueriesData({ queryKey: knowledgeKeys.summariesPrefix() });
+      const previousSummaries = queryClient.getQueriesData<KnowledgeItemsResponse>({
+        queryKey: knowledgeKeys.summariesPrefix(),
+      });
 
       // Optimistically update the detail item
       if (previousItem) {
@@ -652,7 +674,7 @@ export function useUpdateKnowledgeItem() {
       }
 
       // Optimistically update summaries cache
-      queryClient.setQueriesData<KnowledgeItemsResponse>({ queryKey: knowledgeKeys.summariesPrefix() }, (old) => {
+      queryClient.setQueriesData<KnowledgeItemsResponse>({ queryKey: knowledgeKeys.summariesPrefix() }, (old: KnowledgeItemsResponse | undefined) => {
         if (!old?.items) return old;
 
         return {
@@ -698,7 +720,7 @@ export function useUpdateKnowledgeItem() {
 
       return { previousItem, previousSummaries };
     },
-    onError: (error, variables, context) => {
+    onError: (error: Error, variables: { sourceId: string; updates: Partial<KnowledgeItem> & { tags?: string[] } }, context: UpdateContext | undefined) => {
       // Rollback on error
       if (context?.previousItem) {
         queryClient.setQueryData(knowledgeKeys.detail(variables.sourceId), context.previousItem);
@@ -713,7 +735,7 @@ export function useUpdateKnowledgeItem() {
       const errorMessage = error instanceof Error ? error.message : "Failed to update item";
       showToast(errorMessage, "error");
     },
-    onSuccess: (_data, { sourceId }) => {
+    onSuccess: (_data: unknown, { sourceId }: { sourceId: string }) => {
       showToast("Item updated successfully", "success");
 
       // Invalidate all related queries
@@ -732,7 +754,7 @@ export function useRefreshKnowledgeItem() {
 
   return useMutation({
     mutationFn: (sourceId: string) => knowledgeService.refreshKnowledgeItem(sourceId),
-    onSuccess: (data, sourceId) => {
+    onSuccess: (data: unknown, sourceId: string) => {
       showToast("Refresh started", "success");
 
       // Remove the item from cache as it's being refreshed
@@ -743,7 +765,7 @@ export function useRefreshKnowledgeItem() {
 
       return data;
     },
-    onError: (error) => {
+    onError: (error: Error) => {
       const errorMessage = error instanceof Error ? error.message : "Failed to refresh item";
       showToast(errorMessage, "error");
     },
@@ -772,7 +794,7 @@ export function useKnowledgeSummaries(filter?: KnowledgeItemsFilter) {
 
     // Include ALL active operations (not just tracked ones) to catch pre-existing operations
     // This ensures operations started before page load are still shown
-    return activeOperationsData.operations.map((op) => ({
+    return activeOperationsData.operations.map((op: ActiveOperation) => ({
       ...op,
       progressId: op.operation_id,
       type: op.operation_type,
@@ -808,6 +830,17 @@ export function useKnowledgeSummaries(filter?: KnowledgeItemsFilter) {
         // Skip if already in the list
         const sourceId = op.source_id || op.operation_id;
         if (existingSourceIds.has(sourceId)) continue;
+
+        // Check if URL matches any existing item to prevent duplicates
+        // This handles cases where the backend hasn't linked the operation to the source_id yet
+        if (op.url) {
+          const normalizedOpUrl = op.url.replace(/\/$/, "").toLowerCase();
+          const hasMatchingUrl = items.some((item) => {
+            const itemUrl = (item.url || "").replace(/\/$/, "").toLowerCase();
+            return itemUrl === normalizedOpUrl;
+          });
+          if (hasMatchingUrl) continue;
+        }
 
         // Skip if not a crawl or upload
         if (!["crawl", "upload"].includes(op.operation_type)) continue;

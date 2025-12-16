@@ -132,7 +132,7 @@ def register_version_tools(mcp: FastMCP):
         ctx: Context,
         action: str,  # "create" | "restore"
         project_id: str,
-        field_name: str,
+        field_name: str = "docs",
         version_number: int | None = None,
         content: dict[str, Any] | list[dict[str, Any]] | None = None,
         change_summary: str | None = None,

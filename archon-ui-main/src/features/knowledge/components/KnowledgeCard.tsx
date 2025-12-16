@@ -75,8 +75,8 @@ export const KnowledgeCard: React.FC<KnowledgeCardProps> = ({
     const response = await refreshMutation.mutateAsync(item.source_id);
 
     // Notify parent about the new refresh operation
-    if (response?.progressId && onRefreshStarted) {
-      onRefreshStarted(response.progressId);
+    if (response && typeof response === "object" && "progressId" in response && onRefreshStarted) {
+      onRefreshStarted((response as { progressId: string }).progressId);
     }
   };
 

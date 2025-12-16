@@ -5,8 +5,7 @@
 **Name:** Archon  
 **Description:** A "command center" for AI coding assistants (Claude Code, Cursor, Windsurf). It acts as a Model Context Protocol (MCP) server to provide AI agents with curated knowledge, context, and task management capabilities.  
 **Core Value:** Enables AI agents to access your documentation (crawled or uploaded), manage tasks, and maintain project context, replacing the need for manual context pasting.  
-**Status:** Beta (Local-only deployment, fix-forward approach, detailed errors over graceful failures).  
-**Latest Updates (Dec 16, 2025):** Implemented fault-tolerant job tracking with Supervisor-Worker architecture, pause/resume functionality with DB-driven state sync, and enhanced UI status visualization for paused operations.
+**Status:** Beta (Local-only deployment, fix-forward approach, detailed errors over graceful failures).
 
 ---
 
@@ -487,65 +486,6 @@ uv run python -c "from src.server.config.database import get_db; print('DB OK')"
 
 ---
 
-## 11.5 Recent Implementation Status (December 2025)
-
-### Completed Features
-
-#### Fault-Tolerant Job Tracking System
-- **Watchdog Background Task:** Supervisor monitors stale jobs (heartbeat > 2 mins) and automatically recovers them by resetting status to `pending` (up to `max_retries` attempts).
-- **Database Schema:** Added `total_pending` column to `crawl_states` for efficient quantification of pending work without parsing large JSON arrays.
-- **Checkpoint Mechanism:** Workers now update `total_pending` during checkpoints for accurate progress visualization.
-- **Files Modified:**
-  - `python/src/workers/supervisor.py` - Added `run_watchdog()` and `recover_job()` methods
-  - `python/src/server/services/crawling/crawling_service.py` - Updated checkpoint callback to track `total_pending`
-  - `migration/0.1.0/013_add_total_pending_column.sql` - New migration for schema update
-
-#### Pause/Resume Functionality with Database-Driven State Sync
-- **API-Side Fallback:** `pause_crawl_task` and `resume_crawl_task` endpoints now fallback to database status updates if task is not in memory (worker processes).
-- **Worker-Side Monitoring:** Added `_monitor_job_status()` background task to `CrawlingService` that polls DB every 2 seconds and syncs internal pause/resume state.
-- **Bidirectional Communication:** API updates DB → Worker detects change → Worker pauses/resumes execution.
-- **Files Modified:**
-  - `python/src/server/api_routes/knowledge_api.py` - Updated pause/resume endpoints with DB fallback
-  - `python/src/server/services/crawling/crawling_service.py` - Added status monitor and integrated into `execute_crawl_job()`
-
-#### Paused Operations Visibility in Active Operations List
-- **Progress API Enhancement:** Updated `list_active_operations()` to include `paused` status when querying database.
-- **Progress Detail Endpoint:** Updated `get_progress()` to fetch and display progress state for both `processing` and `paused` jobs.
-- **UI Message:** Paused jobs now show "Paused at X/Y pages..." with accurate progress percentage.
-- **Files Modified:**
-  - `python/src/server/api_routes/progress_api.py` - Added `paused` status to active operations queries
-
-#### Enhanced UI Status Visualization
-- **Progress Component:** Added `PauseCircle` icon and orange/yellow color coding for `paused` status in `KnowledgeCardProgress`.
-- **Card Component:** Updated `KnowledgeCard` to apply orange edge color and yellow accent when operation is paused.
-- **Visual Differentiation:** Paused cards now clearly distinguished from running (cyan), failed (red), and processing (orange) states.
-- **Files Modified:**
-  - `archon-ui-main/src/features/progress/components/KnowledgeCardProgress.tsx` - Added paused status handling
-  - `archon-ui-main/src/features/knowledge/components/KnowledgeCard.tsx` - Updated color logic for paused state
-
-### Known Limitations & Next Steps
-
-- **Worker Restart Handling:** If a Worker process crashes during a paused job, the Watchdog will eventually recover it (after heartbeat timeout). This is expected behavior for beta.
-- **Resume Persistence:** When resuming a paused job in a Worker, it will continue from the last checkpoint. Ensure migrations are applied before restarting services.
-- **Progress Quantification:** `total_pending` optimization is optional; UI gracefully falls back to calculating from frontier if column missing.
-
-### Migration Instructions
-
-To enable all new features, apply the following migrations in Supabase SQL Editor:
-
-1. Run `migration/0.1.0/013_add_total_pending_column.sql` to add the new column
-2. Restart backend services: `docker compose restart archon-server`
-3. Paused operations will now be visible in the Active Operations list
-
-### Testing Recommendations
-
-- **Test Pause:** Start a crawl, wait 10+ seconds, click Pause. Verify operation appears in Active Operations with "Paused" badge.
-- **Test Resume:** Click Resume on a paused operation. Verify it continues from the saved checkpoint without restarting.
-- **Test Watchdog:** Stop a Worker process mid-crawl (simulate crash). Wait 2+ minutes. Verify Watchdog automatically recovers the job.
-- **Test Restart:** Pause a job, restart backend. Verify paused operation is still visible and resumable.
-
----
-
 ## 12. Deployment
 
 ### Development
@@ -570,6 +510,5 @@ To enable all new features, apply the following migrations in Supabase SQL Edito
 
 ---
 
-**Last Updated:** December 16, 2025 (Fault Tolerance & Pause/Resume Implementation)  
-**Archon Version:** 0.1.0 (Beta)  
-**Key Recent Changes:** Watchdog recovery system, pause/resume with DB state sync, paused operations visibility, enhanced UI status differentiation
+**Last Updated:** December 16, 2025  
+**Archon Version:** 0.1.0 (Beta)
