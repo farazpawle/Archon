@@ -42,6 +42,7 @@ class RecursiveCrawlStrategy:
         max_concurrent: int | None = None,
         progress_callback: Callable[..., Awaitable[None]] | None = None,
         status_check: Callable[[], Awaitable[None]] | None = None,
+        checkpoint_callback: Callable[[list[str]], Awaitable[None]] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Recursively crawl internal links from start URLs up to a maximum depth with progress reporting.
@@ -54,6 +55,7 @@ class RecursiveCrawlStrategy:
             max_concurrent: Maximum concurrent crawls
             progress_callback: Optional callback for progress updates
             status_check: Optional async function to check for cancellation or pause
+            checkpoint_callback: Optional callback to save visited URLs state
 
         Returns:
             List of crawl results
@@ -314,9 +316,32 @@ class RecursiveCrawlStrategy:
                             f"Failed to crawl {original_url}: {getattr(result, 'error_message', 'Unknown error')}"
                         )
 
+                    # Save checkpoint after each page to ensure UI updates
+                    if checkpoint_callback:
+                        try:
+                            # Calculate frontier: remaining URLs in current batch + remaining URLs in current depth + URLs found for next depth
+                            # This is an approximation for the frontier, but visited is accurate
+                            remaining_in_batch = urls_to_crawl[batch_idx + i + 1 : batch_end_idx]
+                            remaining_in_depth = urls_to_crawl[batch_end_idx:]
+                            frontier = list(remaining_in_batch) + list(remaining_in_depth) + list(next_level_urls)
+                            await checkpoint_callback(list(visited), frontier)
+                        except Exception as e:
+                            logger.warning(f"Failed to save checkpoint: {e}")
+
                     # Skip the confusing "processed X/Y URLs" updates
                     # The "crawling URLs" message at the start of each batch is more accurate
                     i += 1
+                
+                # Save checkpoint after each batch
+                if checkpoint_callback:
+                    try:
+                        # Calculate frontier: remaining URLs in current depth + URLs found for next depth
+                        remaining_current = urls_to_crawl[batch_end_idx:]
+                        frontier = list(remaining_current) + list(next_level_urls)
+                        await checkpoint_callback(list(visited), frontier)
+                    except Exception as e:
+                        logger.warning(f"Failed to save checkpoint: {e}")
+
                 if cancelled:
                     break
 

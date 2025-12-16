@@ -150,6 +150,24 @@ export const knowledgeService = {
   },
 
   /**
+   * Pause a running crawl
+   */
+  async pauseCrawl(progressId: string): Promise<{ success: boolean; message: string }> {
+    return callAPIWithETag<{ success: boolean; message: string }>(`/api/knowledge-items/pause/${progressId}`, {
+      method: "POST",
+    });
+  },
+
+  /**
+   * Resume a paused crawl
+   */
+  async resumeCrawl(progressId: string): Promise<{ success: boolean; message: string }> {
+    return callAPIWithETag<{ success: boolean; message: string }>(`/api/knowledge-items/resume/${progressId}`, {
+      method: "POST",
+    });
+  },
+
+  /**
    * Get document chunks for a knowledge item with pagination
    */
   async getKnowledgeItemChunks(

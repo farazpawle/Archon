@@ -198,7 +198,7 @@ export function useCrawlUrl() {
       }
 
       // Create optimistic progress operation
-      const optimisticOperation: ActiveOperation = {
+      const optimisticOperation: ActiveOperation & { knowledge_type?: string; tags?: string[] } = {
         operation_id: tempProgressId,
         operation_type: "crawl",
         status: "starting",
@@ -209,6 +209,8 @@ export function useCrawlUrl() {
         type: "crawl",
         url: request.url,
         source_id: tempProgressId,
+        knowledge_type: request.knowledge_type,
+        tags: request.tags,
       };
 
       // Add optimistic operation to active operations
@@ -378,7 +380,7 @@ export function useUploadDocument() {
       }
 
       // Create optimistic progress operation for upload
-      const optimisticOperation: ActiveOperation = {
+      const optimisticOperation: ActiveOperation & { knowledge_type?: string; tags?: string[] } = {
         operation_id: tempProgressId,
         operation_type: "upload",
         status: "starting",
@@ -389,6 +391,8 @@ export function useUploadDocument() {
         type: "upload",
         url: `file://${file.name}`,
         source_id: tempProgressId,
+        knowledge_type: metadata.knowledge_type,
+        tags: metadata.tags,
       };
 
       // Add optimistic operation to active operations
@@ -500,6 +504,42 @@ export function useStopCrawl() {
 
       const errorMessage = error instanceof Error ? error.message : "Unknown error";
       showToast(`Failed to stop crawl (${progressId}): ${errorMessage}`, "error");
+    },
+  });
+}
+
+/**
+ * Pause crawl mutation
+ */
+export function usePauseCrawl() {
+  const { showToast } = useToast();
+
+  return useMutation({
+    mutationFn: (progressId: string) => knowledgeService.pauseCrawl(progressId),
+    onSuccess: (_data, progressId) => {
+      showToast(`Pause requested (${progressId}).`, "info");
+    },
+    onError: (error, progressId) => {
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      showToast(`Failed to pause crawl (${progressId}): ${errorMessage}`, "error");
+    },
+  });
+}
+
+/**
+ * Resume crawl mutation
+ */
+export function useResumeCrawl() {
+  const { showToast } = useToast();
+
+  return useMutation({
+    mutationFn: (progressId: string) => knowledgeService.resumeCrawl(progressId),
+    onSuccess: (_data, progressId) => {
+      showToast(`Resume requested (${progressId}).`, "info");
+    },
+    onError: (error, progressId) => {
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      showToast(`Failed to resume crawl (${progressId}): ${errorMessage}`, "error");
     },
   });
 }
@@ -750,12 +790,96 @@ export function useKnowledgeSummaries(filter?: KnowledgeItemsFilter) {
     staleTime: STALE_TIMES.normal, // Consider data stale after 30 seconds
   });
 
+  // Merge active operations into the knowledge list to ensure immediate UI updates
+  // This fixes the delay between "start crawl" and the item appearing in the list
+  const mergedData = useMemo(() => {
+    if (!summaryQuery.data) return summaryQuery.data;
+
+    const items = [...summaryQuery.data.items];
+    const existingSourceIds = new Set(items.map((i) => i.source_id));
+
+    if (activeOperationsData?.operations) {
+      // Sort operations by start time (newest first)
+      const sortedOps = [...activeOperationsData.operations].sort(
+        (a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime(),
+      );
+
+      for (const op of sortedOps) {
+        // Skip if already in the list
+        const sourceId = op.source_id || op.operation_id;
+        if (existingSourceIds.has(sourceId)) continue;
+
+        // Skip if not a crawl or upload
+        if (!["crawl", "upload"].includes(op.operation_type)) continue;
+
+        // Check filter matching
+        const opKnowledgeType = (op as any).knowledge_type || "technical";
+        const opTags = (op as any).tags || [];
+
+        // Filter by knowledge_type
+        if (filter?.knowledge_type && filter.knowledge_type !== opKnowledgeType) continue;
+
+        // Filter by tags
+        if (filter?.tags && filter.tags.length > 0) {
+          const hasTag = filter.tags.every((t) => opTags.includes(t));
+          if (!hasTag) continue;
+        }
+
+        // Filter by search
+        if (filter?.search) {
+          const searchLower = filter.search.toLowerCase();
+          const title = (op.url || "New Item").toLowerCase();
+          if (!title.includes(searchLower)) continue;
+        }
+
+        // Create synthetic item
+        const syntheticItem: KnowledgeItem = {
+          id: op.operation_id, // Use operation_id as temporary id
+          source_id: sourceId,
+          title: (() => {
+            try {
+              return op.url ? new URL(op.url).hostname : "New Item";
+            } catch {
+              return op.url || "New Item";
+            }
+          })(),
+          url: op.url || "",
+          source_type: op.operation_type === "upload" ? "file" : "url",
+          knowledge_type: opKnowledgeType,
+          status: "processing",
+          document_count: 0,
+          code_examples_count: 0,
+          metadata: {
+            knowledge_type: opKnowledgeType,
+            tags: opTags,
+            source_type: op.operation_type === "upload" ? "file" : "url",
+            status: "processing",
+            description: op.message,
+          },
+          created_at: op.started_at,
+          updated_at: op.started_at,
+        };
+
+        // Prepend to list
+        items.unshift(syntheticItem);
+        existingSourceIds.add(sourceId);
+      }
+    }
+
+    return {
+      ...summaryQuery.data,
+      items,
+      total: items.length, // Update total count
+    };
+  }, [summaryQuery.data, activeOperationsData, filter]);
+
   // When operations complete, remove them from tracking
   // Trust smart polling to handle eventual consistency - no manual invalidation needed
   // Active operations are already tracked and polling handles updates when operations complete
 
   return {
     ...summaryQuery,
+    data: mergedData,
     activeCrawlIds,
     setActiveCrawlIds, // Export this so components can add IDs when starting operations
     activeOperations,

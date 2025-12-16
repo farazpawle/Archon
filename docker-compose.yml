@@ -87,6 +87,7 @@ services:
       - app-network
     volumes:
       - ./python/src:/app/src # Mount source code for hot reload
+      - archon-worker-browsers:/ms-playwright # Persist Playwright browsers
     command: ["python", "-m", "src.workers.supervisor"]
     depends_on:
       archon-server:
@@ -262,3 +263,6 @@ services:
 networks:
   app-network:
     driver: bridge
+
+volumes:
+  archon-worker-browsers:

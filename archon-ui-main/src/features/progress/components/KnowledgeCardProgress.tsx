@@ -5,7 +5,7 @@
  */
 
 import { AnimatePresence, motion } from "framer-motion";
-import { AlertCircle, CheckCircle2, Code, FileText, Link, Loader2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Code, FileText, Link, Loader2, PauseCircle } from "lucide-react";
 import { cn } from "../../ui/primitives/styles";
 import type { ActiveOperation } from "../types/progress";
 
@@ -28,6 +28,7 @@ export const KnowledgeCardProgress: React.FC<KnowledgeCardProgressProps> = ({ op
     "source_creation",
     "document_storage",
     "code_extraction",
+    "paused",
   ].includes(operation.status);
 
   // Don't show if not active
@@ -42,6 +43,8 @@ export const KnowledgeCardProgress: React.FC<KnowledgeCardProgressProps> = ({ op
       case "failed":
       case "error":
         return <AlertCircle className="w-3 h-3" />;
+      case "paused":
+        return <PauseCircle className="w-3 h-3" />;
       default:
         return <Loader2 className="w-3 h-3 animate-spin" />;
     }
@@ -57,6 +60,8 @@ export const KnowledgeCardProgress: React.FC<KnowledgeCardProgressProps> = ({ op
       case "cancelled":
       case "stopping":
         return "text-yellow-500 bg-yellow-500/10 border-yellow-500/20";
+      case "paused":
+        return "text-orange-500 bg-orange-500/10 border-orange-500/20";
       default:
         return "text-cyan-500 bg-cyan-500/10 border-cyan-500/20";
     }

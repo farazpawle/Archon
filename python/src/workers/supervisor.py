@@ -15,19 +15,91 @@ class CrawlSupervisor:
         self.worker_id = str(uuid.uuid4())
         self.supabase = get_supabase_client()
         self.running = True
+        self.active_tasks = set()
+        self.max_concurrent_jobs = int(os.getenv("MAX_CONCURRENT_JOBS", "5"))
 
     async def start(self):
-        logger.info(f"Worker Supervisor {self.worker_id} started")
+        logger.info(f"Worker Supervisor {self.worker_id} started with max {self.max_concurrent_jobs} concurrent jobs")
+        
+        # Start Watchdog
+        asyncio.create_task(self.run_watchdog())
+        
         while self.running:
             try:
-                job = await self.poll_job()
-                if job:
-                    await self.process_job(job)
+                # Clean up finished tasks
+                self.active_tasks = {t for t in self.active_tasks if not t.done()}
+                
+                if len(self.active_tasks) < self.max_concurrent_jobs:
+                    job = await self.poll_job()
+                    if job:
+                        # Create background task
+                        task = asyncio.create_task(self.process_job(job))
+                        self.active_tasks.add(task)
+                        # Continue immediately to try to pick up more jobs if available
+                        continue
+                    else:
+                        await asyncio.sleep(1)
                 else:
+                    # Wait if we reached concurrency limit
                     await asyncio.sleep(1)
             except Exception as e:
                 logger.error(f"Supervisor loop error: {e}")
                 await asyncio.sleep(5)
+
+    async def run_watchdog(self):
+        """Background task to recover stale jobs"""
+        logger.info("Watchdog started")
+        while self.running:
+            try:
+                # 1. Find stale jobs (processing but no heartbeat for > 2 mins)
+                response = self.supabase.table("crawl_jobs") \
+                    .select("id, last_heartbeat, retry_count, max_retries") \
+                    .eq("status", "processing") \
+                    .execute()
+                
+                if response.data:
+                    now = datetime.now(timezone.utc)
+                    for job in response.data:
+                        last_heartbeat_str = job.get("last_heartbeat")
+                        if not last_heartbeat_str:
+                            continue
+                            
+                        # Parse ISO format
+                        try:
+                            last_heartbeat = datetime.fromisoformat(last_heartbeat_str.replace('Z', '+00:00'))
+                        except ValueError:
+                            # Handle cases where format might be different or already has offset
+                            last_heartbeat = datetime.fromisoformat(last_heartbeat_str)
+                        
+                        # Check if stale (> 2 mins)
+                        if (now - last_heartbeat).total_seconds() > 120:
+                            logger.warning(f"Watchdog found stale job {job['id']} (last heartbeat: {last_heartbeat})")
+                            await self.recover_job(job)
+                            
+            except Exception as e:
+                logger.error(f"Watchdog error: {e}")
+            
+            await asyncio.sleep(60) # Run every minute
+
+    async def recover_job(self, job):
+        job_id = job["id"]
+        retry_count = job.get("retry_count", 0)
+        max_retries = job.get("max_retries", 3)
+        
+        if retry_count < max_retries:
+            logger.info(f"Recovering job {job_id} (Retry {retry_count + 1}/{max_retries})")
+            self.supabase.table("crawl_jobs").update({
+                "status": "pending",
+                "worker_id": None,
+                "retry_count": retry_count + 1,
+                "error_message": "Recovered from crash by Watchdog"
+            }).eq("id", job_id).execute()
+        else:
+            logger.error(f"Job {job_id} exceeded max retries. Marking as failed.")
+            self.supabase.table("crawl_jobs").update({
+                "status": "failed",
+                "error_message": "Job crashed and exceeded max retries"
+            }).eq("id", job_id).execute()
 
     async def poll_job(self):
         # Simple optimistic locking strategy
@@ -71,6 +143,7 @@ class CrawlSupervisor:
     async def process_job(self, job):
         job_id = job["id"]
         logger.info(f"Starting job {job_id}")
+        start_time = datetime.now()
         
         try:
             # Spawn subprocess
@@ -78,12 +151,14 @@ class CrawlSupervisor:
             env = os.environ.copy()
             env["PYTHONPATH"] = os.getcwd() # Ensure src is in path
             
+            logger.info(f"Spawning runner process for job {job_id}...")
             process = await asyncio.create_subprocess_exec(
                 sys.executable, "-m", "src.workers.runner", job_id,
                 env=env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
+            logger.info(f"Runner process spawned for job {job_id} (PID: {process.pid})")
             
             # Monitor process and update heartbeat
             while True:
@@ -100,6 +175,11 @@ class CrawlSupervisor:
                         .execute()
             
             stdout, stderr = await process.communicate()
+            
+            if stdout:
+                logger.info(f"Job {job_id} stdout: {stdout.decode()}")
+            if stderr:
+                logger.warning(f"Job {job_id} stderr: {stderr.decode()}")
             
             if process.returncode == 0:
                 logger.info(f"Job {job_id} completed successfully")

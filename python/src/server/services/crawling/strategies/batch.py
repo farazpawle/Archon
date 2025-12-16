@@ -267,7 +267,10 @@ class BatchCrawlStrategy:
                     # Checkpoint: Save visited URL
                     if checkpoint_callback:
                         try:
-                            await checkpoint_callback([original_url])
+                            # Calculate frontier: all URLs that haven't been processed yet
+                            # We use the original URLs list and slice from current processed count
+                            frontier = urls[processed:]
+                            await checkpoint_callback([original_url], frontier)
                         except Exception as e:
                             logger.warning(f"Checkpoint failed: {e}")
                             

@@ -12,7 +12,7 @@ This module handles all knowledge base operations including:
 import asyncio
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -825,16 +825,6 @@ async def crawl_knowledge_item(request: KnowledgeItemRequest):
         job_id = response.data[0]["id"]
         progress_id = job_id # Use job_id as progress_id
 
-        # Initialize progress tracker for immediate feedback (optional, but good for UI)
-        from ..utils.progress.progress_tracker import ProgressTracker
-        tracker = ProgressTracker(progress_id, operation_type="crawl")
-        await tracker.start({
-            "url": str(request.url),
-            "status": "pending",
-            "progress": 0,
-            "log": f"Queued crawl for {request.url}"
-        })
-
         safe_logfire_info(
             f"Crawl queued successfully | job_id={job_id} | url={str(request.url)}"
         )
@@ -1432,6 +1422,7 @@ async def pause_crawl_task(progress_id: str):
 
         safe_logfire_info(f"Pause crawl requested | progress_id={progress_id}")
 
+        # 1. Try in-memory orchestration (for same-process crawls)
         orchestration = await get_active_orchestration(progress_id)
         if orchestration:
             orchestration.pause()
@@ -1440,8 +1431,34 @@ async def pause_crawl_task(progress_id: str):
                 "message": "Crawl task paused successfully",
                 "progressId": progress_id,
             }
-        else:
-            raise HTTPException(status_code=404, detail={"error": "No active task for given progress_id"})
+            
+        # 2. Try database (for worker-process crawls)
+        supabase = get_supabase_client()
+        job_response = supabase.table("crawl_jobs").select("status").eq("id", progress_id).execute()
+        
+        if job_response.data:
+            current_status = job_response.data[0]["status"]
+            if current_status == "processing":
+                # Update status to paused
+                supabase.table("crawl_jobs").update({
+                    "status": "paused"
+                }).eq("id", progress_id).execute()
+                
+                return {
+                    "success": True,
+                    "message": "Crawl task paused successfully (worker signal sent)",
+                    "progressId": progress_id,
+                }
+            elif current_status == "paused":
+                return {
+                    "success": True,
+                    "message": "Crawl task is already paused",
+                    "progressId": progress_id,
+                }
+            else:
+                raise HTTPException(status_code=400, detail={"error": f"Cannot pause task in '{current_status}' state"})
+
+        raise HTTPException(status_code=404, detail={"error": "No active task for given progress_id"})
 
     except HTTPException:
         raise
@@ -1460,6 +1477,7 @@ async def resume_crawl_task(progress_id: str):
 
         safe_logfire_info(f"Resume crawl requested | progress_id={progress_id}")
 
+        # 1. Try in-memory orchestration
         orchestration = await get_active_orchestration(progress_id)
         if orchestration:
             orchestration.resume()
@@ -1468,8 +1486,34 @@ async def resume_crawl_task(progress_id: str):
                 "message": "Crawl task resumed successfully",
                 "progressId": progress_id,
             }
-        else:
-            raise HTTPException(status_code=404, detail={"error": "No active task for given progress_id"})
+            
+        # 2. Try database
+        supabase = get_supabase_client()
+        job_response = supabase.table("crawl_jobs").select("status").eq("id", progress_id).execute()
+        
+        if job_response.data:
+            current_status = job_response.data[0]["status"]
+            if current_status == "paused":
+                # Update status to processing
+                supabase.table("crawl_jobs").update({
+                    "status": "processing"
+                }).eq("id", progress_id).execute()
+                
+                return {
+                    "success": True,
+                    "message": "Crawl task resumed successfully (worker signal sent)",
+                    "progressId": progress_id,
+                }
+            elif current_status == "processing":
+                return {
+                    "success": True,
+                    "message": "Crawl task is already running",
+                    "progressId": progress_id,
+                }
+            else:
+                raise HTTPException(status_code=400, detail={"error": f"Cannot resume task in '{current_status}' state"})
+
+        raise HTTPException(status_code=404, detail={"error": "No active task for given progress_id"})
 
     except HTTPException:
         raise

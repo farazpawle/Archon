@@ -272,7 +272,7 @@ class DocumentStorageOperations:
             progress_callback=progress_callback,  # Pass the callback for progress updates
             enable_parallel_batches=True,  # Enable parallel processing
             provider=None,  # Use configured provider
-            cancellation_check=cancellation_check,  # Pass cancellation check
+            status_check=status_check,  # Pass cancellation check
             url_to_page_id=url_to_page_id,  # Link chunks to pages
         )
 

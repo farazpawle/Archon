@@ -5,9 +5,9 @@
 
 // Removed relative started time display to avoid misleading UX
 import { AnimatePresence, motion } from "framer-motion";
-import { AlertCircle, CheckCircle, Globe, Loader2, StopCircle, XCircle } from "lucide-react";
+import { AlertCircle, CheckCircle, Globe, Loader2, PauseCircle, PlayCircle, StopCircle, XCircle } from "lucide-react";
 import { useState } from "react";
-import { useStopCrawl } from "../../knowledge/hooks";
+import { usePauseCrawl, useResumeCrawl, useStopCrawl } from "../../knowledge/hooks";
 import { Button } from "../../ui/primitives";
 import { cn } from "../../ui/primitives/styles";
 import { useCrawlProgressPolling } from "../hooks";
@@ -35,18 +35,42 @@ const itemVariants = {
 export const CrawlingProgress: React.FC<CrawlingProgressProps> = ({ onSwitchToBrowse }) => {
   const { activeOperations, isLoading } = useCrawlProgressPolling();
   const stopMutation = useStopCrawl();
+  const pauseMutation = usePauseCrawl();
+  const resumeMutation = useResumeCrawl();
   const [stoppingId, setStoppingId] = useState<string | null>(null);
+  const [pausingId, setPausingId] = useState<string | null>(null);
+  const [resumingId, setResumingId] = useState<string | null>(null);
 
   const handleStop = async (progressId: string) => {
     try {
       setStoppingId(progressId);
       await stopMutation.mutateAsync(progressId);
-      // Toast is now handled by the useStopCrawl hook
     } catch (error) {
-      // Error toast is now handled by the useStopCrawl hook
       console.error("Stop crawl failed:", { progressId, error });
     } finally {
       setStoppingId(null);
+    }
+  };
+
+  const handlePause = async (progressId: string) => {
+    try {
+      setPausingId(progressId);
+      await pauseMutation.mutateAsync(progressId);
+    } catch (error) {
+      console.error("Pause crawl failed:", { progressId, error });
+    } finally {
+      setPausingId(null);
+    }
+  };
+
+  const handleResume = async (progressId: string) => {
+    try {
+      setResumingId(progressId);
+      await resumeMutation.mutateAsync(progressId);
+    } catch (error) {
+      console.error("Resume crawl failed:", { progressId, error });
+    } finally {
+      setResumingId(null);
     }
   };
 
@@ -60,6 +84,8 @@ export const CrawlingProgress: React.FC<CrawlingProgressProps> = ({ onSwitchToBr
       case "stopped":
       case "cancelled":
         return <StopCircle className="w-4 h-4 text-yellow-400" />;
+      case "paused":
+        return <PauseCircle className="w-4 h-4 text-yellow-400" />;
       default:
         return <Loader2 className="w-4 h-4 text-cyan-400 animate-spin" />;
     }
@@ -74,6 +100,7 @@ export const CrawlingProgress: React.FC<CrawlingProgressProps> = ({ onSwitchToBr
         return "text-red-400 bg-red-500/10 border-red-500/20";
       case "stopped":
       case "cancelled":
+      case "paused":
         return "text-yellow-400 bg-yellow-500/10 border-yellow-500/20";
       default:
         return "text-cyan-400 bg-cyan-500/10 border-cyan-500/20";
@@ -136,6 +163,7 @@ export const CrawlingProgress: React.FC<CrawlingProgressProps> = ({ onSwitchToBr
             "source_creation",
             "document_storage",
             "code_extraction",
+            "paused",
           ].includes(operation.status);
 
           return (
@@ -181,20 +209,54 @@ export const CrawlingProgress: React.FC<CrawlingProgressProps> = ({ onSwitchToBr
                     </div>
 
                     {isActive && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleStop(operation.operation_id)}
-                        disabled={stoppingId === operation.operation_id}
-                        className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
-                      >
-                        {stoppingId === operation.operation_id ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
+                      <div className="flex items-center gap-2">
+                        {operation.status === "paused" ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleResume(operation.operation_id)}
+                            disabled={resumingId === operation.operation_id}
+                            className="text-green-400 hover:text-green-300 hover:bg-green-500/10"
+                          >
+                            {resumingId === operation.operation_id ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <PlayCircle className="w-4 h-4" />
+                            )}
+                            <span className="ml-2">Resume</span>
+                          </Button>
                         ) : (
-                          <StopCircle className="w-4 h-4" />
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handlePause(operation.operation_id)}
+                            disabled={pausingId === operation.operation_id}
+                            className="text-yellow-400 hover:text-yellow-300 hover:bg-yellow-500/10"
+                          >
+                            {pausingId === operation.operation_id ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <PauseCircle className="w-4 h-4" />
+                            )}
+                            <span className="ml-2">Pause</span>
+                          </Button>
                         )}
-                        <span className="ml-2">Stop</span>
-                      </Button>
+
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleStop(operation.operation_id)}
+                          disabled={stoppingId === operation.operation_id}
+                          className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                        >
+                          {stoppingId === operation.operation_id ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <StopCircle className="w-4 h-4" />
+                          )}
+                          <span className="ml-2">Stop</span>
+                        </Button>
+                      </div>
                     )}
                   </div>
                 </div>

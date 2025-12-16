@@ -23,7 +23,8 @@ export type ProgressStatus =
   | "error"
   | "failed"
   | "cancelled"
-  | "stopping";
+  | "stopping"
+  | "paused";
 
 export type CrawlType =
   | "normal"

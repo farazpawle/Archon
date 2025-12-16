@@ -194,7 +194,7 @@ export function useOperationProgress(
  * @param enabled - Whether to enable polling (default: false)
  */
 export function useActiveOperations(enabled = false) {
-  const { refetchInterval } = useSmartPolling(5000);
+  const { refetchInterval } = useSmartPolling(1000);
 
   return useQuery<ActiveOperationsResponse>({
     queryKey: progressKeys.active(),
