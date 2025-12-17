@@ -223,6 +223,51 @@ class MCPServiceClient:
 
         return health_status
 
+    async def register_session(self, transport: str, client_ip: str | None = None, user_agent: str | None = None) -> str | None:
+        """Register a session with the Backend API."""
+        endpoint = urljoin(self.api_url, "/api/mcp/sessions/register")
+        data = {
+            "transport": transport,
+            "client_ip": client_ip,
+            "user_agent": user_agent
+        }
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(endpoint, json=data, headers=self._get_headers())
+                if response.status_code == 200:
+                    return response.json().get("session_id")
+        except Exception as e:
+            mcp_logger.warning(f"Failed to register session remotely: {e}")
+        return None
+
+    async def update_session(self, session_id: str, client_name: str | None = None, client_version: str | None = None) -> bool:
+        """Update a session with the Backend API."""
+        endpoint = urljoin(self.api_url, f"/api/mcp/sessions/{session_id}")
+        data = {}
+        if client_name:
+            data["client_name"] = client_name
+        if client_version:
+            data["client_version"] = client_version
+            
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.put(endpoint, json=data, headers=self._get_headers())
+                return response.status_code == 200
+        except Exception as e:
+            mcp_logger.warning(f"Failed to update session remotely: {e}")
+        return False
+
+    async def unregister_session(self, session_id: str) -> bool:
+        """Unregister a session with the Backend API."""
+        endpoint = urljoin(self.api_url, f"/api/mcp/sessions/{session_id}")
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.delete(endpoint, headers=self._get_headers())
+                return response.status_code == 200
+        except Exception as e:
+            mcp_logger.warning(f"Failed to unregister session remotely: {e}")
+        return False
+
 
 # Global client instance
 _mcp_client = None

@@ -2,13 +2,12 @@ import { motion } from "framer-motion";
 import { Loader, Server } from "lucide-react";
 import type React from "react";
 import { useStaggeredEntrance } from "../../../hooks/useStaggeredEntrance";
-import { McpClientList, McpConfigSection, McpStatusBar, SessionBlock } from "../components";
-import { useMcpClients, useMcpConfig, useMcpSessionInfo, useMcpStatus } from "../hooks";
+import { McpConfigSection, McpStatusBar, SessionBlock } from "../components";
+import { useMcpConfig, useMcpSessionInfo, useMcpStatus } from "../hooks";
 
 export const McpView: React.FC = () => {
   const { data: status, isLoading: statusLoading } = useMcpStatus();
   const { data: config } = useMcpConfig();
-  const { data: clients = [] } = useMcpClients();
   const { data: sessionInfo } = useMcpSessionInfo();
 
   // Staggered entrance animation
@@ -91,18 +90,13 @@ export const McpView: React.FC = () => {
         <McpStatusBar status={status} sessionInfo={sessionInfo} config={config} />
       </motion.div>
 
-      {/* Active Sessions */}
-      <motion.div variants={itemVariants}>
-        <SessionBlock sessions={sessionInfo?.sessions || []} />
-      </motion.div>
-
       {/* Connected Clients */}
       <motion.div variants={itemVariants}>
         <h2 className="text-xl font-semibold mb-4 text-gray-800 dark:text-white flex items-center gap-2">
           <Server className="w-5 h-5 text-cyan-500" />
           Connected Clients
         </h2>
-        <McpClientList clients={clients} />
+        <SessionBlock sessions={sessionInfo?.sessions || []} />
       </motion.div>
 
       {/* IDE Configuration */}

@@ -139,6 +139,35 @@ if not mcp_port:
 server_port = int(mcp_port)
 
 
+class StdioInterceptor:
+    """
+    Intercepts stdin to capture MCP initialization messages.
+    Wraps sys.stdin to peek at incoming JSON-RPC messages.
+    """
+    def __init__(self, original_stdin, on_initialize):
+        self.original_stdin = original_stdin
+        self.on_initialize = on_initialize
+
+    def read(self, size=-1):
+        return self.original_stdin.read(size)
+
+    def readline(self, size=-1):
+        line = self.original_stdin.readline(size)
+        if line:
+            try:
+                # Try to parse as JSON
+                # MCP messages are JSON-RPC 2.0
+                data = json.loads(line)
+                if isinstance(data, dict) and data.get("method") == "initialize":
+                    self.on_initialize(data)
+            except Exception:
+                pass
+        return line
+    
+    def __getattr__(self, name):
+        return getattr(self.original_stdin, name)
+
+
 class SessionMiddleware:
     """
     Middleware to track active SSE sessions.
@@ -149,29 +178,96 @@ class SessionMiddleware:
 
     async def __call__(self, scope, receive, send):
         # Only track SSE connections
-        if scope["type"] == "http" and scope["path"] == "/sse":
-            session_manager = get_session_manager()
+        if scope["type"] == "http":
+            path = scope["path"]
             
-            # Extract client info
-            client = scope.get("client")
-            client_ip = client[0] if client else None
-            
-            headers = dict(scope.get("headers", []))
-            user_agent = headers.get(b"user-agent", b"").decode("latin1")
-            
-            # Register session
-            session_id = session_manager.register_session("sse", client_ip, user_agent)
-            logger.info(f"🔌 SSE Client connected: {session_id} ({client_ip})")
-            
-            try:
+            # Handle SSE connection establishment
+            if path == "/sse":
+                session_manager = get_session_manager()
+                
+                # Extract client info
+                client = scope.get("client")
+                client_ip = client[0] if client else None
+                
+                headers = dict(scope.get("headers", []))
+                user_agent = headers.get(b"user-agent", b"").decode("latin1")
+                
+                # Register session
+                session_id = session_manager.register_session("sse", client_ip, user_agent)
+                logger.info(f"🔌 SSE Client connected: {session_id} ({client_ip})")
+                
+                try:
+                    await self.app(scope, receive, send)
+                except Exception as e:
+                    logger.error(f"SSE connection error: {e}")
+                    raise
+                finally:
+                    # This runs when the connection closes or response finishes
+                    session_manager.unregister_session(session_id)
+                    logger.info(f"🔌 SSE Client disconnected: {session_id}")
+                    
+            # Handle message posting (intercept initialize)
+            elif path == "/messages" or path == "/message":
+                # Extract session ID from query params
+                query_string = scope.get("query_string", b"").decode("latin1")
+                session_id = None
+                for param in query_string.split("&"):
+                    if param.startswith("sessionId="):
+                        session_id = param.split("=")[1]
+                        break
+                
+                if session_id:
+                    # Intercept body to check for initialize
+                    # We need to read the body, then re-inject it for the app
+                    full_body = b""
+                    more_body = True
+                    
+                    # Read the entire body
+                    while more_body:
+                        msg = await receive()
+                        if msg["type"] == "http.request":
+                            full_body += msg.get("body", b"")
+                            more_body = msg.get("more_body", False)
+                        elif msg["type"] == "http.disconnect":
+                            more_body = False
+                            
+                    # Inspect body
+                    try:
+                        if full_body:
+                            data = json.loads(full_body)
+                            if isinstance(data, dict) and data.get("method") == "initialize":
+                                params = data.get("params", {})
+                                client_info = params.get("clientInfo", {})
+                                client_name = client_info.get("name")
+                                client_version = client_info.get("version")
+                                
+                                if client_name:
+                                    session_manager = get_session_manager()
+                                    session_manager.update_session_info(session_id, client_name, client_version)
+                                    logger.info(f"📝 Captured client info for {session_id}: {client_name} {client_version}")
+                    except Exception as e:
+                        logger.debug(f"Failed to parse message body: {e}")
+                        
+                    # Re-create receive for the app
+                    async def new_receive():
+                        # Yield the full body as a single message
+                        nonlocal full_body
+                        if full_body is not None:
+                            chunk = full_body
+                            full_body = None # Clear it so we don't yield again
+                            return {
+                                "type": "http.request",
+                                "body": chunk,
+                                "more_body": False
+                            }
+                        # If called again, wait forever (or until disconnect)
+                        return {"type": "http.disconnect"}
+
+                    await self.app(scope, new_receive, send)
+                else:
+                    await self.app(scope, receive, send)
+            else:
                 await self.app(scope, receive, send)
-            except Exception as e:
-                logger.error(f"SSE connection error: {e}")
-                raise
-            finally:
-                # This runs when the connection closes or response finishes
-                session_manager.unregister_session(session_id)
-                logger.info(f"🔌 SSE Client disconnected: {session_id}")
         else:
             await self.app(scope, receive, send)
 
@@ -753,17 +849,74 @@ def main():
         if TRANSPORT == "stdio":
             safe_log_info("   Transport: Stdio (stdin/stdout)")
             
-            # Register stdio session
-            session_manager = get_session_manager()
-            session_id = session_manager.register_session("stdio", "localhost", "stdio-client")
-            safe_log_info(f"🔌 Stdio session registered: {session_id}")
+            # Register stdio session remotely via API
+            service_client = get_mcp_service_client()
+            
+            # We need to run async registration in sync main
+            session_id = None
+            try:
+                # Try remote registration first (for visibility in dashboard)
+                # We use a new loop for this sync call
+                session_id = asyncio.run(service_client.register_session("stdio", "localhost", "stdio-client"))
+                if session_id:
+                    safe_log_info(f"🔌 Stdio session registered remotely: {session_id}")
+                else:
+                    # Fallback to local registration
+                    session_manager = get_session_manager()
+                    session_id = session_manager.register_session("stdio", "localhost", "stdio-client")
+                    safe_log_info(f"🔌 Stdio session registered locally: {session_id}")
+            except Exception as e:
+                safe_log_error(f"Failed to register session: {e}")
+                # Fallback
+                session_manager = get_session_manager()
+                session_id = session_manager.register_session("stdio", "localhost", "stdio-client")
+
+            # Callback for initialize interception
+            def on_initialize(data):
+                try:
+                    params = data.get("params", {})
+                    client_info = params.get("clientInfo", {})
+                    client_name = client_info.get("name")
+                    client_version = client_info.get("version")
+                    
+                    if client_name and session_id:
+                        safe_log_info(f"📝 Captured Stdio client info: {client_name} {client_version}")
+                        
+                        # Run update in a separate thread to avoid event loop conflicts
+                        def update_task():
+                            try:
+                                asyncio.run(service_client.update_session(session_id, client_name, client_version))
+                            except Exception as e:
+                                safe_log_error(f"Failed to update session remotely: {e}")
+                                
+                        threading.Thread(target=update_task, daemon=True).start()
+                        
+                        # Update locally as well
+                        get_session_manager().update_session_info(session_id, client_name, client_version)
+                except Exception as e:
+                    safe_log_error(f"Error processing initialize: {e}")
+
+            # Intercept stdin
+            sys.stdin = StdioInterceptor(sys.stdin, on_initialize)
             
             try:
                 mcp.run(transport="stdio")
             finally:
                 try:
-                    session_manager.unregister_session(session_id)
-                    safe_log_info(f"🔌 Stdio session unregistered: {session_id}")
+                    if session_id:
+                        # Unregister remotely
+                        def unregister_task():
+                            try:
+                                asyncio.run(service_client.unregister_session(session_id))
+                            except Exception:
+                                pass
+                        t = threading.Thread(target=unregister_task, daemon=True)
+                        t.start()
+                        t.join(timeout=1.0)
+                        
+                        # Unregister locally
+                        get_session_manager().unregister_session(session_id)
+                        safe_log_info(f"🔌 Stdio session unregistered: {session_id}")
                 except Exception:
                     pass
                 

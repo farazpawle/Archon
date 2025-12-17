@@ -19,6 +19,21 @@ export const SessionBlock: React.FC<SessionBlockProps> = ({ sessions }) => {
   };
 
   const getClientInfo = (session: McpSession) => {
+    // Priority 1: Use explicit client name from MCP handshake (if available)
+    if (session.client_name) {
+      const name = session.client_name;
+      const lowerName = name.toLowerCase();
+      
+      if (lowerName.includes("cline")) return { name: "Cline", icon: <Terminal className="w-4 h-4 text-purple-500" /> };
+      if (lowerName.includes("cursor")) return { name: "Cursor", icon: <Terminal className="w-4 h-4 text-blue-500" /> };
+      if (lowerName.includes("windsurf")) return { name: "Windsurf", icon: <Terminal className="w-4 h-4 text-teal-500" /> };
+      if (lowerName.includes("vscode")) return { name: "VS Code", icon: <Terminal className="w-4 h-4 text-blue-600" /> };
+      if (lowerName.includes("claude")) return { name: "Claude", icon: <Globe className="w-4 h-4 text-orange-500" /> };
+      
+      return { name: name, icon: <Terminal className="w-4 h-4 text-indigo-500" /> };
+    }
+
+    // Priority 2: Fallback to User Agent parsing
     const ua = session.user_agent || "";
     const lowerUa = ua.toLowerCase();
     
@@ -27,9 +42,13 @@ export const SessionBlock: React.FC<SessionBlockProps> = ({ sessions }) => {
     if (lowerUa.includes("windsurf")) return { name: "Windsurf", icon: <Terminal className="w-4 h-4 text-teal-500" /> };
     if (lowerUa.includes("vscode")) return { name: "VS Code", icon: <Terminal className="w-4 h-4 text-blue-600" /> };
     if (lowerUa.includes("claude")) return { name: "Claude", icon: <Globe className="w-4 h-4 text-orange-500" /> };
+    if (lowerUa.includes("kilo")) return { name: "Kilo Code", icon: <Terminal className="w-4 h-4 text-indigo-500" /> };
     if (lowerUa.includes("stdio-client")) return { name: "Stdio Process", icon: <Terminal className="w-4 h-4 text-gray-500" /> };
     
-    return { name: session.user_agent?.split('/')[0] || "Unknown Client", icon: null };
+    // Improved fallback: handle leading slashes or empty parts
+    const parts = ua.split('/');
+    const name = parts.find(p => p.trim().length > 0) || "Unknown Client";
+    return { name, icon: null };
   };
 
   const getTransportLabel = (session: McpSession) => {
@@ -49,16 +68,6 @@ export const SessionBlock: React.FC<SessionBlockProps> = ({ sessions }) => {
 
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-sm border border-gray-100 dark:border-gray-700">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-gray-800 dark:text-white flex items-center gap-2">
-          <Monitor className="w-5 h-5 text-blue-500" />
-          Active Sessions
-          <span className="bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300 text-xs px-2 py-0.5 rounded-full">
-            {sessions.length}
-          </span>
-        </h3>
-      </div>
-
       {sessions.length === 0 ? (
         <div className="text-center py-8 text-gray-500 dark:text-gray-400 text-sm">
           No active clients connected.

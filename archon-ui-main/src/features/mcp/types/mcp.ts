@@ -27,6 +27,8 @@ export interface McpSession {
   last_active: string;
   client_ip?: string;
   user_agent?: string;
+  client_name?: string;
+  client_version?: string;
   uptime_seconds?: number;
 }
 

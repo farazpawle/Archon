@@ -82,7 +82,7 @@ export const McpStatusBar: React.FC<McpStatusBarProps> = ({ status, sessionInfo,
           <div className="flex items-center gap-2">
             <Users className="w-4 h-4 text-pink-500" />
             <span className="text-zinc-400">SESSIONS</span>
-            <span className="text-cyan-400 text-sm">Coming Soon</span>
+            <span className="text-cyan-400 text-sm">{sessionInfo.active_sessions}</span>
           </div>
         </>
       )}

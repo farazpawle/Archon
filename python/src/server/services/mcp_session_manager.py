@@ -30,6 +30,8 @@ class McpSession:
     last_active: datetime
     client_ip: Optional[str] = None
     user_agent: Optional[str] = None
+    client_name: Optional[str] = None
+    client_version: Optional[str] = None
 
     def to_dict(self) -> dict:
         """Convert session to dictionary with ISO format dates"""
@@ -66,7 +68,9 @@ class McpSession:
             created_at=created_at,
             last_active=last_active,
             client_ip=data.get("client_ip"),
-            user_agent=data.get("user_agent")
+            user_agent=data.get("user_agent"),
+            client_name=data.get("client_name"),
+            client_version=data.get("client_version")
         )
 
 
@@ -146,6 +150,32 @@ class SimplifiedSessionManager:
         self._save_sessions()
         logger.info(f"Registered new {transport} session: {session_id}")
         return session_id
+
+    def update_session_info(self, session_id: str, client_name: Optional[str] = None, client_version: Optional[str] = None) -> bool:
+        """Update session with client info from MCP handshake"""
+        self._load_sessions()
+        
+        with self._lock:
+            if session_id not in self.sessions:
+                return False
+            
+            session = self.sessions[session_id]
+            updated = False
+            
+            if client_name:
+                session.client_name = client_name
+                updated = True
+                
+            if client_version:
+                session.client_version = client_version
+                updated = True
+                
+            if updated:
+                self._save_sessions()
+                logger.info(f"Updated session {session_id} with client info: {client_name} {client_version}")
+                return True
+                
+        return False
 
     def unregister_session(self, session_id: str) -> bool:
         """Unregister a session by ID"""

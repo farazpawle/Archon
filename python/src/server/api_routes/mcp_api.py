@@ -9,15 +9,17 @@ Docker socket mode available via ENABLE_DOCKER_SOCKET_MONITORING (legacy, securi
 """
 
 import os
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 # Import unified logging
 from ..config.config import get_mcp_monitoring_config
 from ..config.logfire_config import api_logger, safe_set_attribute, safe_span
 from ..config.service_discovery import get_mcp_url
+from ..services.mcp_session_manager import get_session_manager
 
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
 
@@ -258,41 +260,156 @@ async def get_mcp_sessions():
 
         config = get_mcp_monitoring_config()
         mcp_url = get_mcp_url()
+        
+        # Get local sessions (registered via API from Stdio clients)
+        local_session_manager = get_session_manager()
+        local_sessions = local_session_manager.get_all_sessions()
+        
+        # Filter out SSE sessions from local manager if they are also managed by MCP server?
+        # Actually, local manager in Backend API only has sessions pushed to it.
+        # Unless Backend API and MCP Server share the file.
+        # If they share the file, then `local_sessions` contains everything.
+        # If they don't share, `local_sessions` contains Stdio (pushed) and `remote_sessions` contains SSE.
+        
+        remote_sessions = []
+        remote_count = 0
 
         try:
             # Fetch sessions from MCP server
             async with httpx.AsyncClient(timeout=config.health_check_timeout) as client:
                 response = await client.get(f"{mcp_url}/sessions")
-                response.raise_for_status()
-                data = response.json()
-                
-                # data structure: {success: bool, count: int, sessions: [...], timestamp: str}
-                
-                session_info = {
-                    "active_sessions": data.get("count", 0),
-                    "sessions": data.get("sessions", []),
-                    "session_timeout": 3600, # Default fallback
-                }
-                
-                # Get uptime from status if possible
-                status = await get_container_status()
-                if status.get("status") == "running" and status.get("uptime"):
-                    session_info["server_uptime_seconds"] = status["uptime"]
-
-                api_logger.debug(f"MCP session info - sessions={session_info.get('active_sessions')}")
-                safe_set_attribute(span, "active_sessions", session_info.get("active_sessions"))
-
-                return session_info
+                if response.status_code == 200:
+                    data = response.json()
+                    remote_sessions = data.get("sessions", [])
+                    remote_count = data.get("count", 0)
 
         except Exception as e:
-            api_logger.error(f"Failed to get MCP sessions - error={str(e)}")
-            safe_set_attribute(span, "error", str(e))
-            # Fallback to empty but valid response
-            return {
-                "active_sessions": 0,
-                "sessions": [],
-                "error": str(e)
-            }
+            api_logger.warning(f"Failed to get remote MCP sessions: {e}")
+            
+        # Merge sessions
+        # Use a dict by ID to deduplicate
+        all_sessions_map = {}
+        
+        for s in local_sessions:
+            all_sessions_map[s["session_id"]] = s
+            
+        for s in remote_sessions:
+            all_sessions_map[s["session_id"]] = s
+            
+        merged_sessions = list(all_sessions_map.values())
+        
+        session_info = {
+            "active_sessions": len(merged_sessions),
+            "sessions": merged_sessions,
+            "session_timeout": 3600,
+        }
+        
+        # Get uptime from status if possible
+        try:
+            status = await get_container_status()
+            if status.get("status") == "running" and status.get("uptime"):
+                session_info["server_uptime_seconds"] = status["uptime"]
+        except Exception:
+            pass
+
+        api_logger.debug(f"MCP session info - sessions={session_info.get('active_sessions')}")
+        safe_set_attribute(span, "active_sessions", session_info.get("active_sessions"))
+
+        return session_info
+
+
+class SessionRegisterRequest(BaseModel):
+    transport: str
+    client_ip: Optional[str] = None
+    user_agent: Optional[str] = None
+    client_name: Optional[str] = None
+    client_version: Optional[str] = None
+
+
+class SessionUpdateRequest(BaseModel):
+    client_name: Optional[str] = None
+    client_version: Optional[str] = None
+
+
+@router.post("/sessions/register")
+async def register_session(request: SessionRegisterRequest):
+    """Register a new MCP session (used by remote/stdio clients)."""
+    with safe_span("api_mcp_register_session") as span:
+        try:
+            session_manager = get_session_manager()
+            
+            session_id = session_manager.register_session(
+                transport=request.transport,
+                client_ip=request.client_ip,
+                user_agent=request.user_agent
+            )
+            
+            # If name/version provided immediately
+            if request.client_name or request.client_version:
+                session_manager.update_session_info(
+                    session_id, 
+                    request.client_name, 
+                    request.client_version
+                )
+                
+            api_logger.info(f"Registered remote session: {session_id} ({request.transport})")
+            return {"success": True, "session_id": session_id}
+        except Exception as e:
+            api_logger.error(f"Failed to register session: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/sessions/{session_id}")
+async def update_session(session_id: str, request: SessionUpdateRequest):
+    """Update an existing MCP session."""
+    with safe_span("api_mcp_update_session") as span:
+        try:
+            session_manager = get_session_manager()
+            success = session_manager.update_session_info(
+                session_id,
+                request.client_name,
+                request.client_version
+            )
+            if not success:
+                # Session might be expired or from another instance not sharing storage
+                # But since we use shared file, it should be there.
+                raise HTTPException(status_code=404, detail="Session not found")
+            return {"success": True}
+        except HTTPException:
+            raise
+        except Exception as e:
+            api_logger.error(f"Failed to update session: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sessions/{session_id}/heartbeat")
+async def session_heartbeat(session_id: str):
+    """Update session heartbeat."""
+    with safe_span("api_mcp_session_heartbeat") as span:
+        try:
+            session_manager = get_session_manager()
+            success = session_manager.validate_session(session_id)
+            if not success:
+                raise HTTPException(status_code=404, detail="Session not found")
+            return {"success": True}
+        except HTTPException:
+            raise
+        except Exception as e:
+            api_logger.error(f"Failed to heartbeat session: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/sessions/{session_id}")
+async def unregister_session(session_id: str):
+    """Unregister an MCP session."""
+    with safe_span("api_mcp_unregister_session") as span:
+        try:
+            session_manager = get_session_manager()
+            success = session_manager.unregister_session(session_id)
+            return {"success": success}
+        except Exception as e:
+            api_logger.error(f"Failed to unregister session: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/health")

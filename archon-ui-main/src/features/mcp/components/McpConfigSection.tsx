@@ -28,10 +28,12 @@ const ideConfigurations: Record<
     configGenerator: (config: McpServerConfig, options: ConfigOptions) => string;
     supportsOneClick?: boolean;
     platformSpecific?: boolean;
+    supportsStdio: boolean;
   }
 > = {
   claudecode: {
     title: "Claude Code Configuration",
+    supportsStdio: true,
     steps: () => [
       "Open a terminal and run the following command:",
       "The connection will be established automatically",
@@ -70,6 +72,7 @@ const ideConfigurations: Record<
   },
   githubcopilot: {
     title: "GitHub Copilot Configuration",
+    supportsStdio: true,
     steps: (options) => [
       "Open VS Code settings (Cmd/Ctrl + ,)",
       'Search for "github.copilot.mcpServers"',
@@ -117,27 +120,52 @@ const ideConfigurations: Record<
   },
   gemini: {
     title: "Gemini CLI Configuration",
+    supportsStdio: true,
     steps: (options) => [
       "Locate or create the settings file at ~/.gemini/settings.json",
       "Add the configuration shown below to the file",
       "Launch Gemini CLI in your terminal",
       "Test the connection by typing /mcp to list available tools",
     ],
-    configGenerator: (config, options) =>
-      JSON.stringify(
+    configGenerator: (config, options) => {
+      if (options.transport === "http") {
+        return JSON.stringify(
+          {
+            mcpServers: {
+              archon: {
+                httpUrl: `http://${config.host}:${config.port}/sse`,
+              },
+            },
+          },
+          null,
+          2,
+        );
+      }
+      // Stdio
+      const args = options.deployment === "docker"
+        ? ["exec", "-i", "-e", "TRANSPORT=stdio", "archon-mcp", "python", "-m", "src.mcp_server.mcp_server"]
+        : ["run", "python", "-m", "src.mcp_server.mcp_server"];
+      
+      const command = options.deployment === "docker" ? "docker" : "uv";
+
+      return JSON.stringify(
         {
           mcpServers: {
             archon: {
-              httpUrl: `http://${config.host}:${config.port}/sse`,
+              command: command,
+              args: args,
+              env: options.deployment === "native" ? { TRANSPORT: "stdio" } : undefined
             },
           },
         },
         null,
         2,
-      ),
+      );
+    },
   },
   codex: {
     title: "Codex Configuration",
+    supportsStdio: false,
     steps: (options) => [
       "Step 1: Install mcp-remote globally: npm install -g mcp-remote",
       "Step 2: Add configuration to ~/.codex/config.toml",
@@ -174,6 +202,7 @@ env = { }`;
   },
   cursor: {
     title: "Cursor Configuration",
+    supportsStdio: true,
     steps: (options) => [
       "Option A: Use the one-click install button below (recommended for HTTP)",
       "Option B: Manually edit ~/.cursor/mcp.json",
@@ -219,6 +248,7 @@ env = { }`;
   },
   windsurf: {
     title: "Windsurf Configuration",
+    supportsStdio: true,
     steps: (options) => [
       'Open Windsurf and click the "MCP servers" button (hammer icon)',
       'Click "Configure" and then "View raw config"',
@@ -263,6 +293,7 @@ env = { }`;
   },
   cline: {
     title: "Cline Configuration",
+    supportsStdio: true,
     steps: (options) => [
       "Open VS Code settings (Cmd/Ctrl + ,)",
       'Search for "cline.mcpServers"',
@@ -309,6 +340,7 @@ env = { }`;
   },
   kiro: {
     title: "Kiro Configuration",
+    supportsStdio: true,
     steps: (options) => [
       "Open Kiro settings",
       "Navigate to MCP Servers section",
@@ -375,8 +407,15 @@ export const McpConfigSection: React.FC<McpConfigSectionProps> = ({ config, stat
     );
   }
 
+  const selectedConfig = ideConfigurations[selectedIDE];
+  const supportsStdio = selectedConfig.supportsStdio;
+
   const handleCopyConfig = async () => {
-    const configText = ideConfigurations[selectedIDE].configGenerator(config, { transport: transportMode, deployment: deploymentMode });
+    if (transportMode === "stdio" && !supportsStdio) {
+        showToast("This agent doesn't support stdio", "error");
+        return;
+    }
+    const configText = selectedConfig.configGenerator(config, { transport: transportMode, deployment: deploymentMode });
     const result = await copyToClipboard(configText);
 
     if (result.success) {
@@ -401,7 +440,7 @@ export const McpConfigSection: React.FC<McpConfigSectionProps> = ({ config, stat
   const handleClaudeCodeCommand = async () => {
     let command = "";
     if (transportMode === "http") {
-      command = `claude mcp add --transport http archon http://${config.host}:${config.port}/mcp`;
+      command = `claude mcp add --transport http archon http://${config.host}:${config.port}/sse`;
     } else {
       if (deploymentMode === "docker") {
         command = `claude mcp add archon -- docker exec -i -e TRANSPORT=stdio archon-mcp python -m src.mcp_server.mcp_server`;
@@ -420,7 +459,6 @@ export const McpConfigSection: React.FC<McpConfigSectionProps> = ({ config, stat
     }
   };
 
-  const selectedConfig = ideConfigurations[selectedIDE];
   const configText = selectedConfig.configGenerator(config, { transport: transportMode, deployment: deploymentMode });
 
   return (
@@ -452,18 +490,37 @@ export const McpConfigSection: React.FC<McpConfigSectionProps> = ({ config, stat
 
         <TabsContent value={selectedIDE} className="mt-6 space-y-4">
           {/* Configuration Controls */}
-          <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center p-4 rounded-lg bg-zinc-50/50 dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-800">
+          <div
+            className={cn(
+              "relative flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center p-4 rounded-lg",
+              glassmorphism.background.card,
+              glassmorphism.border.default,
+              glassmorphism.shadow.elevated,
+              glassmorphism.border.hover,
+            )}
+          >
             <div className="space-y-1">
               <h5 className="text-sm font-medium text-gray-700 dark:text-zinc-300">Connection Type</h5>
               <p className="text-xs text-gray-500 dark:text-zinc-500">Choose how the IDE connects to Archon</p>
             </div>
-            <div className="flex gap-4">
-              <ToggleGroup type="single" value={transportMode} onValueChange={(v) => v && setTransportMode(v as TransportMode)}>
-                <ToggleGroupItem value="http" aria-label="HTTP Transport">
+            <div className="flex">
+              <ToggleGroup
+                type="single"
+                value={transportMode}
+                onValueChange={(v) => v && setTransportMode(v as TransportMode)}
+                className="p-1 gap-1"
+              >
+                <ToggleGroupItem value="http" aria-label="HTTP Transport" size="md" className="rounded-md">
                   <Globe className="w-4 h-4 mr-2" />
                   HTTP (SSE)
                 </ToggleGroupItem>
-                <ToggleGroupItem value="stdio" aria-label="Stdio Transport">
+                <ToggleGroupItem
+                  value="stdio"
+                  aria-label="Stdio Transport"
+                  size="md"
+                  disabled={!supportsStdio}
+                  className={cn("rounded-md", glassmorphism.interactive.disabled)}
+                >
                   <Terminal className="w-4 h-4 mr-2" />
                   Stdio
                 </ToggleGroupItem>
@@ -471,19 +528,32 @@ export const McpConfigSection: React.FC<McpConfigSectionProps> = ({ config, stat
             </div>
           </div>
 
-          {transportMode === "stdio" && (
-            <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center p-4 rounded-lg bg-zinc-50/50 dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-800">
+          {transportMode === "stdio" && supportsStdio && (
+            <div
+              className={cn(
+                "relative flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center p-4 rounded-lg",
+                glassmorphism.background.card,
+                glassmorphism.border.default,
+                glassmorphism.shadow.elevated,
+                glassmorphism.border.hover,
+              )}
+            >
               <div className="space-y-1">
                 <h5 className="text-sm font-medium text-gray-700 dark:text-zinc-300">Deployment Mode</h5>
                 <p className="text-xs text-gray-500 dark:text-zinc-500">How Archon is running locally</p>
               </div>
-              <div className="flex gap-4">
-                <ToggleGroup type="single" value={deploymentMode} onValueChange={(v) => v && setDeploymentMode(v as DeploymentMode)}>
-                  <ToggleGroupItem value="docker" aria-label="Docker Deployment">
+              <div className="flex">
+                <ToggleGroup
+                  type="single"
+                  value={deploymentMode}
+                  onValueChange={(v) => v && setDeploymentMode(v as DeploymentMode)}
+                  className="p-1 gap-1"
+                >
+                  <ToggleGroupItem value="docker" aria-label="Docker Deployment" size="md" className="rounded-md">
                     <Box className="w-4 h-4 mr-2" />
                     Docker
                   </ToggleGroupItem>
-                  <ToggleGroupItem value="native" aria-label="Native Deployment">
+                  <ToggleGroupItem value="native" aria-label="Native Deployment" size="md" className="rounded-md">
                     <Laptop className="w-4 h-4 mr-2" />
                     Native
                   </ToggleGroupItem>
@@ -562,23 +632,31 @@ export const McpConfigSection: React.FC<McpConfigSectionProps> = ({ config, stat
 
           {/* Configuration Display */}
           <div className={cn("relative rounded-lg p-4", glassmorphism.background.subtle, glassmorphism.border.default)}>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                Configuration
-                {selectedIDE === "codex" && (
-                  <span className="ml-2 text-xs text-yellow-600 dark:text-yellow-400">
-                    ({navigator.platform.toLowerCase().includes("win") ? "Windows" : "Linux/macOS"})
+            {transportMode === "stdio" && !supportsStdio ? (
+              <div className="flex items-center justify-center py-8 text-zinc-500 dark:text-zinc-400">
+                <p>This agent doesn't support stdio</p>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                    Configuration
+                    {selectedIDE === "codex" && (
+                      <span className="ml-2 text-xs text-yellow-600 dark:text-yellow-400">
+                        ({navigator.platform.toLowerCase().includes("win") ? "Windows" : "Linux/macOS"})
+                      </span>
+                    )}
                   </span>
-                )}
-              </span>
-              <Button variant="outline" size="sm" onClick={handleCopyConfig}>
-                <Copy className="w-3 h-3 mr-1" />
-                Copy
-              </Button>
-            </div>
-            <pre className="text-xs font-mono text-gray-800 dark:text-zinc-200 overflow-x-auto">
-              <code>{configText}</code>
-            </pre>
+                  <Button variant="outline" size="sm" onClick={handleCopyConfig}>
+                    <Copy className="w-3 h-3 mr-1" />
+                    Copy
+                  </Button>
+                </div>
+                <pre className="text-xs font-mono text-gray-800 dark:text-zinc-200 overflow-x-auto">
+                  <code>{configText}</code>
+                </pre>
+              </>
+            )}
           </div>
 
           {/* One-Click Install for Cursor */}
