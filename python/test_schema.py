@@ -2,6 +2,7 @@
 """Test schema generation for the fixed tools."""
 
 from typing import Any
+
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("test")

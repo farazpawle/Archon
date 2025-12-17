@@ -2,7 +2,7 @@ import { motion } from "framer-motion";
 import { Loader, Server } from "lucide-react";
 import type React from "react";
 import { useStaggeredEntrance } from "../../../hooks/useStaggeredEntrance";
-import { McpClientList, McpConfigSection, McpStatusBar } from "../components";
+import { McpClientList, McpConfigSection, McpStatusBar, SessionBlock } from "../components";
 import { useMcpClients, useMcpConfig, useMcpSessionInfo, useMcpStatus } from "../hooks";
 
 export const McpView: React.FC = () => {
@@ -89,6 +89,11 @@ export const McpView: React.FC = () => {
       {/* Status Bar */}
       <motion.div variants={itemVariants}>
         <McpStatusBar status={status} sessionInfo={sessionInfo} config={config} />
+      </motion.div>
+
+      {/* Active Sessions */}
+      <motion.div variants={itemVariants}>
+        <SessionBlock sessions={sessionInfo?.sessions || []} />
       </motion.div>
 
       {/* Connected Clients */}

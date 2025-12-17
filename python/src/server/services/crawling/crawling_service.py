@@ -9,8 +9,8 @@ batch crawling, recursive crawling, and overall orchestration with progress trac
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any, Optional
-from datetime import datetime, timezone
 
 import tldextract
 
@@ -192,7 +192,7 @@ class CrawlingService:
         """Check if cancelled or paused. Waits if paused."""
         if self._cancelled:
             raise asyncio.CancelledError("Crawl operation was cancelled by user")
-        
+
         if not self._pause_event.is_set():
             safe_logfire_info(f"Crawl paused, waiting for resume | progress_id={self.progress_id}")
             # Update tracker to show paused state
@@ -202,9 +202,9 @@ class CrawlingService:
                     progress=self.progress_tracker.state.get("progress", 0),
                     log="Crawl paused by user"
                 )
-            
+
             await self._pause_event.wait()
-            
+
             safe_logfire_info(f"Crawl resumed | progress_id={self.progress_id}")
             # Update tracker to show resuming
             if self.progress_tracker:
@@ -213,7 +213,7 @@ class CrawlingService:
                     progress=self.progress_tracker.state.get("progress", 0),
                     log="Crawl resumed"
                 )
-        
+
         # Check cancellation again after resume
         if self._cancelled:
             raise asyncio.CancelledError("Crawl operation was cancelled by user")
@@ -805,7 +805,7 @@ class CrawlingService:
                 safe_logfire_info(
                     f"Unregistered orchestration service on error | progress_id={self.progress_id}"
                 )
-            
+
             if raise_on_error:
                 raise
 
@@ -1137,11 +1137,11 @@ class CrawlingService:
                 # Check if we should stop monitoring (if task is done/cancelled locally)
                 if self.is_cancelled():
                     break
-                    
+
                 response = self.supabase_client.table("crawl_jobs").select("status").eq("id", job_id).execute()
                 if response.data:
                     status = response.data[0]["status"]
-                    
+
                     if status == "paused" and not self.is_paused():
                         self.pause()
                     elif status == "processing" and self.is_paused():
@@ -1151,10 +1151,10 @@ class CrawlingService:
                         break
                     elif status == "completed":
                         break
-                        
+
             except Exception as e:
                 logger.error(f"Error monitoring job status: {e}")
-                
+
             await asyncio.sleep(2) # Poll every 2 seconds
 
     async def execute_crawl_job(self, request: dict[str, Any], job_id: str):
@@ -1165,7 +1165,7 @@ class CrawlingService:
         # 1. Setup Progress Reporting to DB
         async def db_progress_callback(status: str, progress: int, message: str, **kwargs):
             try:
-                now = datetime.now(timezone.utc).isoformat()
+                now = datetime.now(UTC).isoformat()
                 # Don't overwrite status if it's paused in DB
                 # We only update progress and heartbeat
                 data = {
@@ -1188,21 +1188,21 @@ class CrawlingService:
                 current_visited = []
                 if response.data:
                     current_visited = response.data[0].get("visited_urls", [])
-                
+
                 # Merge
                 new_visited = list(set(current_visited + visited_urls))
                 current_frontier = frontier or []
-                
+
                 # Upsert
                 self.supabase_client.table("crawl_states").upsert({
                     "job_id": job_id,
                     "visited_urls": new_visited,
                     "frontier": current_frontier,
                     "total_pending": len(current_frontier),
-                    "updated_at": datetime.now(timezone.utc).isoformat()
+                    "updated_at": datetime.now(UTC).isoformat()
                 }).execute()
                 safe_logfire_info(f"Checkpoint saved | job_id={job_id} | total_visited={len(new_visited)} | pending={len(current_frontier)}")
-                
+
             except Exception as e:
                 logger.error(f"Failed to save checkpoint: {e}")
 
@@ -1211,7 +1211,7 @@ class CrawlingService:
             self.supabase_client.table("crawl_states").upsert({
                 "job_id": job_id,
                 "visited_urls": [],
-                "updated_at": datetime.now(timezone.utc).isoformat()
+                "updated_at": datetime.now(UTC).isoformat()
             }).execute()
             safe_logfire_info(f"Initialized crawl state | job_id={job_id}")
         except Exception as e:
@@ -1220,12 +1220,12 @@ class CrawlingService:
         # 3. Inject callbacks into strategies
         # We use a wrapper around batch_strategy.crawl_batch_with_progress
         original_batch_crawl = self.batch_strategy.crawl_batch_with_progress
-        
+
         async def wrapped_batch_crawl(*args, **kwargs):
             safe_logfire_info(f"Wrapped batch crawl called | job_id={job_id}")
             kwargs["checkpoint_callback"] = checkpoint_callback
             return await original_batch_crawl(*args, **kwargs)
-            
+
         self.batch_strategy.crawl_batch_with_progress = wrapped_batch_crawl
 
         # Inject into recursive strategy as well
@@ -1241,7 +1241,7 @@ class CrawlingService:
         # 4. Run the logic
         # We reuse _async_orchestrate_crawl logic but we need to await it.
         # We mock self.progress_tracker to call our db_progress_callback.
-        
+
         class MockTracker:
             def __init__(self):
                 self.state = {}
@@ -1260,12 +1260,12 @@ class CrawlingService:
             async def start(self, *args, **kwargs): pass
             async def complete(self, *args, **kwargs): pass
             async def error(self, *args, **kwargs): pass
-            
+
         self.progress_tracker = MockTracker()
-        
+
         # Start status monitor
         monitor_task = asyncio.create_task(self._monitor_job_status(job_id))
-        
+
         try:
             # Now call the internal logic
             await self._async_orchestrate_crawl(request, job_id, raise_on_error=True)

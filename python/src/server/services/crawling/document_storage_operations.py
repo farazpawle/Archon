@@ -6,7 +6,7 @@ Extracted from crawl_orchestration_service.py for better modularity.
 """
 
 import asyncio
-from collections.abc import Callable, Awaitable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ...config.logfire_config import get_logger, safe_logfire_error, safe_logfire_info

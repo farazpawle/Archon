@@ -40,7 +40,7 @@ class SitemapCrawlStrategy:
                     raise  # Re-raise to let the caller handle progress reporting
 
             logger.info(f"Parsing sitemap: {sitemap_url}")
-            
+
             # Run synchronous requests in a thread to avoid blocking the event loop
             resp = await asyncio.to_thread(requests.get, sitemap_url, timeout=30)
 

@@ -331,7 +331,7 @@ class RecursiveCrawlStrategy:
                     # Skip the confusing "processed X/Y URLs" updates
                     # The "crawling URLs" message at the start of each batch is more accurate
                     i += 1
-                
+
                 # Save checkpoint after each batch
                 if checkpoint_callback:
                     try:

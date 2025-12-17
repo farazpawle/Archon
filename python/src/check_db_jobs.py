@@ -1,18 +1,16 @@
 
 import asyncio
-import os
-import sys
 
 # Inside container, /app is usually the root, and /app/src is where code is.
 # If we run from /app, 'src' is a package.
 # If we run from /app/src, we might need to adjust.
-
 from src.server.utils import get_supabase_client
+
 
 async def check_jobs():
     # Env vars are already loaded in the container
     supabase = get_supabase_client()
-    
+
     print("--- Checking crawl_jobs ---")
     response = supabase.table("crawl_jobs").select("*").in_("status", ["pending", "processing"]).execute()
     jobs = response.data
@@ -31,7 +29,7 @@ async def check_jobs():
             pending = state.get("total_pending")
             if pending is None:
                 pending = len(state.get("frontier", []) or [])
-            
+
             print(f"Job {state['job_id']} State: Visited={visited}, Pending={pending}, Total={visited+pending}")
 
 if __name__ == "__main__":

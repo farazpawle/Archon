@@ -20,15 +20,34 @@ export interface McpClient {
   status: "active" | "idle";
 }
 
+export interface McpSession {
+  session_id: string;
+  transport: string;
+  created_at: string;
+  last_active: string;
+  client_ip?: string;
+  user_agent?: string;
+  uptime_seconds?: number;
+}
+
 export interface McpSessionInfo {
   active_sessions: number;
   session_timeout: number;
   server_uptime_seconds?: number;
+  sessions?: McpSession[];
   clients?: McpClient[];
 }
 
 // we actually support all ides and mcp clients
-export type SupportedIDE = "windsurf" | "cursor" | "claudecode" | "cline" | "kiro" | "codex" | "gemini";
+export type SupportedIDE =
+  | "windsurf"
+  | "cursor"
+  | "claudecode"
+  | "cline"
+  | "kiro"
+  | "codex"
+  | "gemini"
+  | "githubcopilot";
 
 export interface IdeConfiguration {
   ide: SupportedIDE;

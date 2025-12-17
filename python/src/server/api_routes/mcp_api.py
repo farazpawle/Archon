@@ -256,27 +256,43 @@ async def get_mcp_sessions():
         safe_set_attribute(span, "endpoint", "/api/mcp/sessions")
         safe_set_attribute(span, "method", "GET")
 
+        config = get_mcp_monitoring_config()
+        mcp_url = get_mcp_url()
+
         try:
-            # Basic session info for now
-            status = await get_container_status()
+            # Fetch sessions from MCP server
+            async with httpx.AsyncClient(timeout=config.health_check_timeout) as client:
+                response = await client.get(f"{mcp_url}/sessions")
+                response.raise_for_status()
+                data = response.json()
+                
+                # data structure: {success: bool, count: int, sessions: [...], timestamp: str}
+                
+                session_info = {
+                    "active_sessions": data.get("count", 0),
+                    "sessions": data.get("sessions", []),
+                    "session_timeout": 3600, # Default fallback
+                }
+                
+                # Get uptime from status if possible
+                status = await get_container_status()
+                if status.get("status") == "running" and status.get("uptime"):
+                    session_info["server_uptime_seconds"] = status["uptime"]
 
-            session_info = {
-                "active_sessions": 0,  # TODO: Implement real session tracking
-                "session_timeout": 3600,  # 1 hour default
-            }
+                api_logger.debug(f"MCP session info - sessions={session_info.get('active_sessions')}")
+                safe_set_attribute(span, "active_sessions", session_info.get("active_sessions"))
 
-            # Add uptime if server is running
-            if status.get("status") == "running" and status.get("uptime"):
-                session_info["server_uptime_seconds"] = status["uptime"]
+                return session_info
 
-            api_logger.debug(f"MCP session info - sessions={session_info.get('active_sessions')}")
-            safe_set_attribute(span, "active_sessions", session_info.get("active_sessions"))
-
-            return session_info
         except Exception as e:
             api_logger.error(f"Failed to get MCP sessions - error={str(e)}")
             safe_set_attribute(span, "error", str(e))
-            raise HTTPException(status_code=500, detail=str(e)) from e
+            # Fallback to empty but valid response
+            return {
+                "active_sessions": 0,
+                "sessions": [],
+                "error": str(e)
+            }
 
 
 @router.get("/health")

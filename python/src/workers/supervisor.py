@@ -1,12 +1,11 @@
 import asyncio
-import uuid
-import subprocess
-import sys
 import os
-import json
-from datetime import datetime, timezone
-from src.server.utils import get_supabase_client
+import sys
+import uuid
+from datetime import UTC, datetime
+
 from src.server.config.logfire_config import get_logger
+from src.server.utils import get_supabase_client
 
 logger = get_logger(__name__)
 
@@ -20,15 +19,15 @@ class CrawlSupervisor:
 
     async def start(self):
         logger.info(f"Worker Supervisor {self.worker_id} started with max {self.max_concurrent_jobs} concurrent jobs")
-        
+
         # Start Watchdog
         asyncio.create_task(self.run_watchdog())
-        
+
         while self.running:
             try:
                 # Clean up finished tasks
                 self.active_tasks = {t for t in self.active_tasks if not t.done()}
-                
+
                 if len(self.active_tasks) < self.max_concurrent_jobs:
                     job = await self.poll_job()
                     if job:
@@ -56,36 +55,36 @@ class CrawlSupervisor:
                     .select("id, last_heartbeat, retry_count, max_retries") \
                     .eq("status", "processing") \
                     .execute()
-                
+
                 if response.data:
-                    now = datetime.now(timezone.utc)
+                    now = datetime.now(UTC)
                     for job in response.data:
                         last_heartbeat_str = job.get("last_heartbeat")
                         if not last_heartbeat_str:
                             continue
-                            
+
                         # Parse ISO format
                         try:
                             last_heartbeat = datetime.fromisoformat(last_heartbeat_str.replace('Z', '+00:00'))
                         except ValueError:
                             # Handle cases where format might be different or already has offset
                             last_heartbeat = datetime.fromisoformat(last_heartbeat_str)
-                        
+
                         # Check if stale (> 2 mins)
                         if (now - last_heartbeat).total_seconds() > 120:
                             logger.warning(f"Watchdog found stale job {job['id']} (last heartbeat: {last_heartbeat})")
                             await self.recover_job(job)
-                            
+
             except Exception as e:
                 logger.error(f"Watchdog error: {e}")
-            
+
             await asyncio.sleep(60) # Run every minute
 
     async def recover_job(self, job):
         job_id = job["id"]
         retry_count = job.get("retry_count", 0)
         max_retries = job.get("max_retries", 3)
-        
+
         if retry_count < max_retries:
             logger.info(f"Recovering job {job_id} (Retry {retry_count + 1}/{max_retries})")
             self.supabase.table("crawl_jobs").update({
@@ -112,14 +111,14 @@ class CrawlSupervisor:
                 .order("created_at", desc=False) \
                 .limit(1) \
                 .execute()
-            
+
             if not response.data:
                 return None
-            
+
             job_id = response.data[0]["id"]
-            
+
             # 2. Try to claim it
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(UTC).isoformat()
             update_response = self.supabase.table("crawl_jobs") \
                 .update({
                     "status": "processing",
@@ -130,12 +129,12 @@ class CrawlSupervisor:
                 .eq("id", job_id) \
                 .eq("status", "pending") \
                 .execute()
-                
+
             if update_response.data:
                 return update_response.data[0]
-            
+
             return None
-            
+
         except Exception as e:
             logger.error(f"Error polling job: {e}")
             return None
@@ -144,13 +143,13 @@ class CrawlSupervisor:
         job_id = job["id"]
         logger.info(f"Starting job {job_id}")
         start_time = datetime.now()
-        
+
         try:
             # Spawn subprocess
             # We use sys.executable to ensure we use the same python environment
             env = os.environ.copy()
             env["PYTHONPATH"] = os.getcwd() # Ensure src is in path
-            
+
             logger.info(f"Spawning runner process for job {job_id}...")
             process = await asyncio.create_subprocess_exec(
                 sys.executable, "-m", "src.workers.runner", job_id,
@@ -159,28 +158,28 @@ class CrawlSupervisor:
                 stderr=asyncio.subprocess.PIPE
             )
             logger.info(f"Runner process spawned for job {job_id} (PID: {process.pid})")
-            
+
             # Monitor process and update heartbeat
             while True:
                 try:
                     # Wait for process with timeout to send heartbeats
                     await asyncio.wait_for(process.wait(), timeout=10.0)
                     break
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Update heartbeat
-                    now = datetime.now(timezone.utc).isoformat()
+                    now = datetime.now(UTC).isoformat()
                     self.supabase.table("crawl_jobs") \
                         .update({"last_heartbeat": now}) \
                         .eq("id", job_id) \
                         .execute()
-            
+
             stdout, stderr = await process.communicate()
-            
+
             if stdout:
                 logger.info(f"Job {job_id} stdout: {stdout.decode()}")
             if stderr:
                 logger.warning(f"Job {job_id} stderr: {stderr.decode()}")
-            
+
             if process.returncode == 0:
                 logger.info(f"Job {job_id} completed successfully")
                 # Status update should be handled by runner, but we double check
@@ -188,7 +187,7 @@ class CrawlSupervisor:
             else:
                 logger.error(f"Job {job_id} failed with code {process.returncode}")
                 logger.error(f"Stderr: {stderr.decode()}")
-                
+
                 self.supabase.table("crawl_jobs") \
                     .update({
                         "status": "failed",
@@ -196,7 +195,7 @@ class CrawlSupervisor:
                     }) \
                     .eq("id", job_id) \
                     .execute()
-                    
+
         except Exception as e:
             logger.error(f"Error processing job {job_id}: {e}")
             self.supabase.table("crawl_jobs") \

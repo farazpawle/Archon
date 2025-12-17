@@ -12,14 +12,13 @@ This module handles all knowledge base operations including:
 import asyncio
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 # Basic validation - simplified inline version
-
 # Import unified logging
 from ..config.logfire_config import get_logger, safe_logfire_error, safe_logfire_info
 from ..services.crawler_manager import get_crawler
@@ -62,7 +61,7 @@ active_crawl_tasks: dict[str, asyncio.Task] = {}
 async def _validate_provider_api_key(provider: str = None) -> None:
     """Validate LLM provider API key before starting operations."""
     logger.info("🔑 Starting API key validation...")
-    
+
     try:
         # Basic provider validation
         if not provider:
@@ -117,7 +116,7 @@ async def _validate_provider_api_key(provider: str = None) -> None:
                     "provider": provider,
                 },
             )
-            
+
         logger.info(f"✅ {provider.title()} API key validation successful")
 
     except HTTPException:
@@ -129,7 +128,7 @@ async def _validate_provider_api_key(provider: str = None) -> None:
         error_str = str(e)
         sanitized_error = ProviderErrorFactory.sanitize_provider_error(error_str, provider or "openai")
         logger.error(f"❌ Caught exception during API key validation: {sanitized_error}")
-        
+
         # Always fail for any exception during validation - better safe than sorry
         logger.error("🚨 API key validation failed - blocking crawl operation")
         raise HTTPException(
@@ -199,14 +198,14 @@ async def get_crawl_progress(progress_id: str):
             # Fallback: Check database for queued/running/completed jobs
             # This handles server restarts or worker-processed jobs
             supabase = get_supabase_client()
-            
+
             # Check crawl_jobs table
             job_response = supabase.table("crawl_jobs").select("*").eq("id", progress_id).execute()
-            
+
             if job_response.data:
                 job = job_response.data[0]
                 status = job["status"]
-                
+
                 # Map DB status to progress data
                 progress_data = {
                     "progress_id": progress_id,
@@ -215,7 +214,7 @@ async def get_crawl_progress(progress_id: str):
                     "progress": 0,
                     "log": f"Job is {status}"
                 }
-                
+
                 if status == "pending":
                     progress_data["progress"] = 0
                     progress_data["log"] = "Waiting for worker..."
@@ -235,17 +234,17 @@ async def get_crawl_progress(progress_id: str):
                     else:
                         progress_data["progress"] = 10 # Started but no state yet
                         progress_data["log"] = "Worker started processing..."
-                        
+
                 elif status == "completed":
                     progress_data["progress"] = 100
                     progress_data["log"] = "Crawl completed successfully"
                     progress_data["status"] = "completed"
-                    
+
                 elif status == "failed":
                     progress_data["status"] = "failed"
                     progress_data["error"] = job.get("error_message", "Unknown error")
                     progress_data["log"] = f"Failed: {progress_data['error']}"
-            
+
             else:
                 # Return 404 if no progress exists - this is correct behavior
                 raise HTTPException(status_code=404, detail={"error": f"No progress found for ID: {progress_id}"})
@@ -663,14 +662,14 @@ async def get_knowledge_item_code_examples(
 @router.post("/knowledge-items/{source_id}/refresh")
 async def refresh_knowledge_item(source_id: str):
     """Refresh a knowledge item by re-crawling its URL with the same metadata."""
-    
+
     # Validate API key before starting expensive refresh operation
     logger.info("🔍 About to validate API key for refresh...")
     provider_config = await credential_service.get_active_provider("embedding")
     provider = provider_config.get("provider", "openai")
     await _validate_provider_api_key(provider)
     logger.info("✅ API key validation completed successfully for refresh")
-    
+
     try:
         safe_logfire_info(f"Starting knowledge item refresh | source_id={source_id}")
 
@@ -800,7 +799,7 @@ async def crawl_knowledge_item(request: KnowledgeItemRequest):
         safe_logfire_info(
             f"Starting knowledge item crawl | url={str(request.url)} | knowledge_type={request.knowledge_type} | tags={request.tags}"
         )
-        
+
         # Prepare payload
         payload = {
             "url": str(request.url),
@@ -810,7 +809,7 @@ async def crawl_knowledge_item(request: KnowledgeItemRequest):
             "extract_code_examples": request.extract_code_examples,
             "generate_summary": True,
         }
-        
+
         # Insert into crawl_jobs queue
         supabase = get_supabase_client()
         response = supabase.table("crawl_jobs").insert({
@@ -818,17 +817,17 @@ async def crawl_knowledge_item(request: KnowledgeItemRequest):
             "status": "pending",
             "priority": 0
         }).execute()
-        
+
         if not response.data:
             raise Exception("Failed to enqueue crawl job")
-            
+
         job_id = response.data[0]["id"]
         progress_id = job_id # Use job_id as progress_id
 
         safe_logfire_info(
             f"Crawl queued successfully | job_id={job_id} | url={str(request.url)}"
         )
-        
+
         # Create a proper response that will be converted to camelCase
         from pydantic import BaseModel, Field
 
@@ -949,14 +948,14 @@ async def upload_document(
     extract_code_examples: bool = Form(True),
 ):
     """Upload and process a document with progress tracking."""
-    
-    # Validate API key before starting expensive upload operation  
+
+    # Validate API key before starting expensive upload operation
     logger.info("🔍 About to validate API key for upload...")
     provider_config = await credential_service.get_active_provider("embedding")
     provider = provider_config.get("provider", "openai")
     await _validate_provider_api_key(provider)
     logger.info("✅ API key validation completed successfully for upload")
-    
+
     try:
         # DETAILED LOGGING: Track knowledge_type parameter flow
         safe_logfire_info(
@@ -1373,7 +1372,7 @@ async def stop_crawl_task(progress_id: str):
                 supabase.table("crawl_jobs").update({
                     "status": "failed",
                     "error_message": "Cancelled by user",
-                    "completed_at": datetime.now(timezone.utc).isoformat()
+                    "completed_at": datetime.now(UTC).isoformat()
                 }).eq("id", progress_id).execute()
                 found = True
 
@@ -1431,11 +1430,11 @@ async def pause_crawl_task(progress_id: str):
                 "message": "Crawl task paused successfully",
                 "progressId": progress_id,
             }
-            
+
         # 2. Try database (for worker-process crawls)
         supabase = get_supabase_client()
         job_response = supabase.table("crawl_jobs").select("status").eq("id", progress_id).execute()
-        
+
         if job_response.data:
             current_status = job_response.data[0]["status"]
             if current_status == "processing":
@@ -1443,7 +1442,7 @@ async def pause_crawl_task(progress_id: str):
                 supabase.table("crawl_jobs").update({
                     "status": "paused"
                 }).eq("id", progress_id).execute()
-                
+
                 return {
                     "success": True,
                     "message": "Crawl task paused successfully (worker signal sent)",
@@ -1486,11 +1485,11 @@ async def resume_crawl_task(progress_id: str):
                 "message": "Crawl task resumed successfully",
                 "progressId": progress_id,
             }
-            
+
         # 2. Try database
         supabase = get_supabase_client()
         job_response = supabase.table("crawl_jobs").select("status").eq("id", progress_id).execute()
-        
+
         if job_response.data:
             current_status = job_response.data[0]["status"]
             if current_status == "paused":
@@ -1498,7 +1497,7 @@ async def resume_crawl_task(progress_id: str):
                 supabase.table("crawl_jobs").update({
                     "status": "processing"
                 }).eq("id", progress_id).execute()
-                
+
                 return {
                     "success": True,
                     "message": "Crawl task resumed successfully (worker signal sent)",

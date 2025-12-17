@@ -2,13 +2,14 @@ import ast
 import sys
 from pathlib import Path
 
+
 def verify_document_tools():
     file_path = Path("src/mcp_server/features/documents/document_tools.py")
     print(f"Verifying {file_path}...")
-    
-    with open(file_path, "r") as f:
+
+    with open(file_path) as f:
         tree = ast.parse(f.read())
-        
+
     found = False
     for node in ast.walk(tree):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "manage_document":
@@ -23,7 +24,7 @@ def verify_document_tools():
                     else:
                         print(f"❌ manage_document: 'content' parameter type is {ast.dump(arg.annotation)}")
                         return False
-            
+
             # Also check args if not in kwonlyargs
             for arg in node.args.args:
                 if arg.arg == "content":
@@ -32,7 +33,7 @@ def verify_document_tools():
                      else:
                         print(f"❌ manage_document: 'content' parameter type is {ast.dump(arg.annotation)}")
                         return False
-                        
+
     if not found:
         print("❌ manage_document function not found")
         return False
@@ -41,10 +42,10 @@ def verify_document_tools():
 def verify_version_tools():
     file_path = Path("src/mcp_server/features/documents/version_tools.py")
     print(f"Verifying {file_path}...")
-    
-    with open(file_path, "r") as f:
+
+    with open(file_path) as f:
         tree = ast.parse(f.read())
-        
+
     found = False
     for node in ast.walk(tree):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "manage_version":
@@ -54,20 +55,20 @@ def verify_version_tools():
             # We need to map args to defaults.
             args = node.args.args
             defaults = node.args.defaults
-            
+
             # Calculate offset
             offset = len(args) - len(defaults)
-            
+
             field_name_index = -1
             for i, arg in enumerate(args):
                 if arg.arg == "field_name":
                     field_name_index = i
                     break
-            
+
             if field_name_index == -1:
                 print("❌ manage_version: 'field_name' argument not found")
                 return False
-                
+
             if field_name_index >= offset:
                 default_val = defaults[field_name_index - offset]
                 if isinstance(default_val, ast.Constant) and default_val.value == "docs":
@@ -90,7 +91,7 @@ if __name__ == "__main__":
         success = False
     if not verify_version_tools():
         success = False
-        
+
     if success:
         print("\nAll verifications PASSED")
         sys.exit(0)

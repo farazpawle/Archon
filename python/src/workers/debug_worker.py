@@ -1,15 +1,16 @@
 import asyncio
 import os
-import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from src.server.utils import get_supabase_client
+
 
 async def debug_worker():
     print("--- Archon Worker Debugger ---")
-    
+
     # 1. Check Environment
-    print(f"Checking environment...")
+    print("Checking environment...")
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_SERVICE_KEY")
     if not url:
@@ -37,10 +38,10 @@ async def debug_worker():
             .order("created_at", desc=True) \
             .limit(10) \
             .execute()
-        
+
         jobs = response.data
         print(f"Found {len(jobs)} total jobs (showing last 10)")
-        
+
         for job in jobs:
             print(f"  - Job ID: {job['id']}")
             print(f"    Status: {job['status']}")
@@ -49,7 +50,7 @@ async def debug_worker():
             print(f"    Worker ID: {job.get('worker_id')}")
             print(f"    Error Message: {job.get('error_message')}")
             print(f"    Completed At: {job.get('completed_at')}")
-            
+
             # Check crawl state
             try:
                 state_response = supabase.table("crawl_states").select("*").eq("job_id", job['id']).execute()
@@ -59,8 +60,8 @@ async def debug_worker():
                     pending = len(state.get("pending_urls", []))
                     print(f"    Crawl State: Visited={visited}, Pending={pending}")
                 else:
-                    print(f"    Crawl State: Not found")
-                    
+                    print("    Crawl State: Not found")
+
                     # Try to create one to test permissions/schema
                     if job == jobs[0]: # Only for the first one
                         print("    Attempting to create dummy crawl state...")
@@ -68,15 +69,15 @@ async def debug_worker():
                             dummy_res = supabase.table("crawl_states").insert({
                                 "job_id": job['id'],
                                 "visited_urls": ["http://test.com"],
-                                "updated_at": datetime.now(timezone.utc).isoformat()
+                                "updated_at": datetime.now(UTC).isoformat()
                             }).execute()
                             print("    ✅ Dummy state created successfully")
                         except Exception as e:
                             print(f"    ❌ Failed to create dummy state: {e}")
-                            
+
             except Exception as e:
                 print(f"    Crawl State Error: {e}")
-            
+
     except Exception as e:
         print(f"❌ Failed to query pending jobs: {e}")
         return
@@ -89,7 +90,7 @@ async def debug_worker():
             .order("created_at", desc=True) \
             .limit(5) \
             .execute()
-            
+
         if pages_response.data:
             for page in pages_response.data:
                 print(f"  - Page: {page['url']}")
@@ -105,13 +106,13 @@ async def debug_worker():
         job = jobs[0]
         job_id = job['id']
         print(f"\nAttempting to claim Job {job_id} (Dry Run)...")
-        
+
         worker_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
-        
+        now = datetime.now(UTC).isoformat()
+
         print(f"  Worker ID: {worker_id}")
         print(f"  Time: {now}")
-        
+
         # We won't actually update to avoid interfering with real worker if it wakes up
         # But we can check if we have permission to read the record specifically
         try:

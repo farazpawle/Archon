@@ -108,19 +108,34 @@ def setup_logfire(
 
     # Set up standard Python logging (always)
     if not handlers:
+        # Only add a StreamHandler if no handlers are provided
+        # This respects existing configuration if force=False, but we use force=True below
+        # so we must be careful.
         handlers.append(logging.StreamHandler())
 
     # Read LOG_LEVEL from environment
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 
     # Configure root logging
-    logging.basicConfig(
-        level=getattr(logging, log_level, logging.INFO),
-        format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=handlers,
-        force=True,
-    )
+    # We use force=True to ensure our format and handlers are applied,
+    # but this can be dangerous if the stream is closed.
+    # However, StreamHandler defaults to sys.stderr, which is what we want.
+    try:
+        logging.basicConfig(
+            level=getattr(logging, log_level, logging.INFO),
+            format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+            handlers=handlers,
+            force=True,
+        )
+    except ValueError:
+        # If sys.stderr is closed, basicConfig might fail when creating StreamHandler
+        # Fallback to no handlers or NullHandler
+        logging.basicConfig(
+            level=getattr(logging, log_level, logging.INFO),
+            handlers=[logging.NullHandler()],
+            force=True
+        )
 
     # Suppress noisy third-party library logs
     # These libraries log low-level details that are rarely useful

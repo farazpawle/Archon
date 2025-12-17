@@ -14,13 +14,32 @@ Note: Crawling and document upload operations are handled directly by the
 API service and frontend, not through MCP tools.
 """
 
-import json
-import logging
 import os
 import sys
+import tempfile
+
+# --- CRITICAL: STDIO CONFIGURATION ---
+# In stdio mode, we must ensure that ONLY the MCP protocol writes to stdout.
+# All logging must be directed to stderr. We do NOT redirect sys.stdout to sys.stderr
+# globally because FastMCP (and the underlying MCP SDK) needs to write to the real stdout.
+TRANSPORT = os.getenv("TRANSPORT", "sse").lower()
+
+# NOTE: We import FastMCP after configuring transport to ensure environment is ready
+try:
+    from mcp.server.fastmcp import Context, FastMCP
+except ImportError:
+    pass
+
+# In stdio mode, we rely on the logging configuration to send logs to stderr.
+# We do NOT overwrite sys.stdout here.
+
+import json
+import logging
 import threading
 import time
 import traceback
+import asyncio
+# import uvicorn  # Lazy imported later
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -29,27 +48,66 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from mcp.server.fastmcp import Context, FastMCP
+# from mcp.server.fastmcp import Context, FastMCP # Moved up
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 # Add the project root to Python path for imports
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# python/src/mcp_server/mcp_server.py -> python/src/mcp_server -> python/src -> python
+current_file = Path(__file__).resolve()
+src_root = current_file.parent.parent
+python_root = src_root.parent
+repo_root = python_root.parent
+
+sys.path.insert(0, str(python_root))
 
 # Load environment variables from the project root .env file
-project_root = Path(__file__).resolve().parent.parent
-dotenv_path = project_root / ".env"
+# Try repo root first (local dev), then python root (docker/build)
+dotenv_path = repo_root / ".env"
+if not dotenv_path.exists():
+    dotenv_path = python_root / ".env"
+
 load_dotenv(dotenv_path, override=True)
 
+# Re-validate transport mode (in case env var changed, though unlikely)
+TRANSPORT = os.getenv("TRANSPORT", "sse").lower()
+
+# Validate transport mode
+if TRANSPORT not in ["stdio", "sse"]:
+    print(f"ERROR: Invalid TRANSPORT mode '{TRANSPORT}'. Must be 'stdio' or 'sse'.", file=sys.stderr)
+    sys.exit(1)
+
 # Configure logging FIRST before any imports that might use it
+# In stdio mode, logs must go to stderr. In sse mode, stdout is fine.
+log_stream = sys.stderr if TRANSPORT == "stdio" else sys.stdout
+
+# Helper for safe logging during shutdown
+def safe_log_info(msg: str):
+    """Log info message safely, ignoring closed file errors."""
+    try:
+        # Re-acquire logger in case it was reconfigured
+        logging.getLogger(__name__).info(msg)
+    except (ValueError, OSError, IOError):
+        # Ignore "I/O operation on closed file" errors during shutdown
+        pass
+    except Exception:
+        pass
+
+def safe_log_error(msg: str):
+    """Log error message safely, ignoring closed file errors."""
+    try:
+        logging.getLogger(__name__).error(msg)
+    except (ValueError, OSError, IOError):
+        pass
+    except Exception:
+        pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("/tmp/mcp_server.log", mode="a")
-        if os.path.exists("/tmp")
-        else logging.NullHandler(),
+        logging.StreamHandler(log_stream),
+        logging.FileHandler(os.path.join(tempfile.gettempdir(), "mcp_server.log"), mode="a"),
     ],
 )
 logger = logging.getLogger(__name__)
@@ -79,6 +137,43 @@ if not mcp_port:
         "Default value: 8051"
     )
 server_port = int(mcp_port)
+
+
+class SessionMiddleware:
+    """
+    Middleware to track active SSE sessions.
+    Implemented as pure ASGI middleware to handle streaming responses correctly.
+    """
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        # Only track SSE connections
+        if scope["type"] == "http" and scope["path"] == "/sse":
+            session_manager = get_session_manager()
+            
+            # Extract client info
+            client = scope.get("client")
+            client_ip = client[0] if client else None
+            
+            headers = dict(scope.get("headers", []))
+            user_agent = headers.get(b"user-agent", b"").decode("latin1")
+            
+            # Register session
+            session_id = session_manager.register_session("sse", client_ip, user_agent)
+            logger.info(f"🔌 SSE Client connected: {session_id} ({client_ip})")
+            
+            try:
+                await self.app(scope, receive, send)
+            except Exception as e:
+                logger.error(f"SSE connection error: {e}")
+                raise
+            finally:
+                # This runs when the connection closes or response finishes
+                session_manager.unregister_session(session_id)
+                logger.info(f"🔌 SSE Client disconnected: {session_id}")
+        else:
+            await self.app(scope, receive, send)
 
 
 @dataclass
@@ -130,6 +225,19 @@ async def perform_health_checks(context: ArchonContext):
         context.health_status["last_health_check"] = datetime.now().isoformat()
 
 
+async def health_check_loop(context: ArchonContext):
+    """Background task to periodically check health."""
+    logger.info("🏥 Starting background health check loop...")
+    while True:
+        try:
+            await perform_health_checks(context)
+        except Exception as e:
+            logger.error(f"Error in health check loop: {e}")
+        
+        # Check every 30 seconds
+        await asyncio.sleep(30)
+
+
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[ArchonContext]:
     """
@@ -153,6 +261,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[ArchonContext]:
 
         logger.info("🚀 Starting MCP server...")
 
+        health_task = None
         try:
             # Initialize session manager
             logger.info("🔐 Initializing session manager...")
@@ -167,8 +276,9 @@ async def lifespan(server: FastMCP) -> AsyncIterator[ArchonContext]:
             # Create context
             context = ArchonContext(service_client=service_client)
 
-            # Perform initial health check
-            await perform_health_checks(context)
+            # Start background health check loop (non-blocking)
+            # This ensures server starts even if dependencies are down
+            health_task = asyncio.create_task(health_check_loop(context))
 
             logger.info("✓ MCP server ready")
 
@@ -184,6 +294,14 @@ async def lifespan(server: FastMCP) -> AsyncIterator[ArchonContext]:
             raise
         finally:
             # Clean up resources
+            if health_task:
+                logger.info("🛑 Stopping health check loop...")
+                health_task.cancel()
+                try:
+                    await health_task
+                except asyncio.CancelledError:
+                    pass
+            
             logger.info("🧹 Cleaning up MCP server...")
             logger.info("✅ MCP server shutdown complete")
 
@@ -319,7 +437,6 @@ try:
 
     mcp = FastMCP(
         "archon-mcp-server",
-        description="MCP server for Archon - uses HTTP calls to other services",
         instructions=MCP_INSTRUCTIONS,
         lifespan=lifespan,
         host=server_host,
@@ -418,6 +535,33 @@ async def session_info(ctx: Context) -> str:
             "error": f"Failed to get session info: {str(e)}",
             "timestamp": datetime.now().isoformat(),
         })
+
+
+# Custom route for detailed session list
+@mcp.custom_route("/sessions", methods=["GET"])
+async def get_sessions_endpoint(request: Request):
+    """
+    Get detailed list of active sessions.
+    
+    Returns:
+        JSON with list of session objects
+    """
+    try:
+        session_manager = get_session_manager()
+        sessions = session_manager.get_all_sessions()
+        
+        return JSONResponse({
+            "success": True,
+            "count": len(sessions),
+            "sessions": sessions,
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        logger.error(f"Failed to get sessions: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": str(e)
+        }, status_code=500)
 
 
 # Import and register modules
@@ -604,18 +748,65 @@ def main():
         setup_logfire(service_name="archon-mcp-server")
 
         logger.info("🚀 Starting Archon MCP Server")
-        logger.info("   Mode: Streamable HTTP")
-        logger.info(f"   URL: http://{server_host}:{server_port}/mcp")
+        logger.info(f"   Mode: {TRANSPORT}")
 
-        mcp_logger.info("🔥 Logfire initialized for MCP server")
-        mcp_logger.info(f"🌟 Starting MCP server - host={server_host}, port={server_port}")
+        if TRANSPORT == "stdio":
+            safe_log_info("   Transport: Stdio (stdin/stdout)")
+            
+            # Register stdio session
+            session_manager = get_session_manager()
+            session_id = session_manager.register_session("stdio", "localhost", "stdio-client")
+            safe_log_info(f"🔌 Stdio session registered: {session_id}")
+            
+            try:
+                mcp.run(transport="stdio")
+            finally:
+                try:
+                    session_manager.unregister_session(session_id)
+                    safe_log_info(f"🔌 Stdio session unregistered: {session_id}")
+                except Exception:
+                    pass
+                
+        else:
+            safe_log_info("   Transport: Streamable HTTP (SSE)")
+            safe_log_info(f"   URL: http://{server_host}:{server_port}/mcp")
+            
+            # Add session middleware to FastMCP's underlying app
+            # Since FastMCP exposes the app as a property/function (ASGI callable) and not the Starlette object directly,
+            # we must wrap it manually and run uvicorn directly instead of using mcp.run()
+            
+            mcp_logger.info("🔥 Logfire initialized for MCP server")
+            mcp_logger.info(f"🌟 Starting MCP server - transport={TRANSPORT}")
 
-        mcp.run(transport="streamable-http")
+            # Determine which app to use based on transport
+            # For 'streamable-http' (which is what we want for SSE+POST), FastMCP uses streamable_http_app
+            # But for 'sse' mode, we should prefer sse_app if available
+            app = None
+            if TRANSPORT == "sse" and hasattr(mcp, "sse_app"):
+                app = mcp.sse_app()
+                logger.info("✓ Found sse_app (called factory) for SSE transport")
+            elif hasattr(mcp, "streamable_http_app"):
+                app = mcp.streamable_http_app()
+                logger.info("✓ Found streamable_http_app (called factory)")
+            elif hasattr(mcp, "sse_app"):
+                app = mcp.sse_app()
+                logger.info("✓ Found sse_app (called factory)")
+            else:
+                raise RuntimeError("Could not find ASGI app on FastMCP instance")
+
+            # Wrap with SessionMiddleware
+            # SessionMiddleware is a Starlette BaseHTTPMiddleware, which takes an app in __init__
+            wrapped_app = SessionMiddleware(app)
+            logger.info("✓ SessionMiddleware applied")
+
+            # Run with uvicorn
+            import uvicorn
+            uvicorn.run(wrapped_app, host=server_host, port=server_port)
 
     except Exception as e:
         mcp_logger.error(f"💥 Fatal error in main - error={str(e)}, error_type={type(e).__name__}")
-        logger.error(f"💥 Fatal error in main: {e}")
-        logger.error(traceback.format_exc())
+        safe_log_error(f"💥 Fatal error in main: {e}")
+        safe_log_error(traceback.format_exc())
         raise
 
 
@@ -623,8 +814,9 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        logger.info("👋 MCP server stopped by user")
+        safe_log_info("👋 MCP server stopped by user")
     except Exception as e:
-        logger.error(f"💥 Unhandled exception: {e}")
-        logger.error(traceback.format_exc())
+        safe_log_error(f"💥 Unhandled exception: {e}")
+        safe_log_error(traceback.format_exc())
         sys.exit(1)
+

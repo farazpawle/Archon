@@ -5,8 +5,8 @@ This module provides HTTP clients for the MCP service to communicate with
 other services (API and Agents) instead of importing their modules directly.
 """
 
-import uuid
 import os
+import uuid
 from typing import Any
 from urllib.parse import urljoin
 

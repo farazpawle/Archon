@@ -56,7 +56,7 @@ async def get_progress(
                         elif db_status == "failed":
                             operation["error"] = job.get("error_message")
                             operation["log"] = f"Failed: {job.get('error_message')}"
-                    
+
                     # If still processing or paused, fetch progress from crawl_states to reflect worker progress
                     if db_status in ["processing", "paused"]:
                         state_response = supabase.table("crawl_states").select("visited_urls, frontier, total_pending").eq("job_id", operation_id).execute()
@@ -67,7 +67,7 @@ async def get_progress(
                             pending = state.get("total_pending")
                             if pending is None:
                                 pending = len(state.get("frontier", []) or [])
-                                
+
                             total = visited + pending
                             if total > 0:
                                 new_progress = int((visited / total) * 100)
@@ -158,29 +158,29 @@ async def list_active_operations():
 
         # Sync with DB for crawl operations to ensure we have latest status from workers
         crawl_ids = [
-            op_id for op_id, op in ProgressTracker.list_active().items() 
+            op_id for op_id, op in ProgressTracker.list_active().items()
             if op.get("type") == "crawl" and op.get("status") not in TERMINAL_STATES
         ]
-        
+
         if crawl_ids:
             try:
                 supabase = get_supabase_client()
                 # Batch query to check status of all active crawls
                 response = supabase.table("crawl_jobs").select("id, status, error_message").in_("id", crawl_ids).execute()
-                
+
                 if response.data:
                     for job in response.data:
                         job_id = job["id"]
                         db_status = job["status"]
-                        
+
                         # Get current memory state
                         op = ProgressTracker.get_progress(job_id)
                         if op and op.get("status") != db_status:
                             logfire.info(f"Syncing progress from DB | id={job_id} | memory={op.get('status')} | db={db_status}")
-                            
+
                             # Update status in memory
                             op["status"] = db_status
-                            
+
                             # Update other fields based on status
                             if db_status == "completed":
                                 op["progress"] = 100
@@ -230,7 +230,7 @@ async def list_active_operations():
             supabase = get_supabase_client()
             # Fetch pending, processing, and PAUSED jobs
             db_jobs = supabase.table("crawl_jobs").select("*").in_("status", ["pending", "processing", "paused"]).execute()
-            
+
             if db_jobs.data:
                 # Optimization: Batch fetch states for processing/paused jobs to calculate progress
                 active_ids = [j['id'] for j in db_jobs.data if j['status'] in ['processing', 'paused']]
@@ -246,19 +246,19 @@ async def list_active_operations():
 
                 for job in db_jobs.data:
                     job_id = job["id"]
-                    
+
                     # Skip if already in tracker (handled above)
                     if job_id in tracker_active:
                         continue
-                        
+
                     # Create synthetic operation for DB job
                     payload = job.get("payload") or {}
                     status = job["status"]
-                    
+
                     # Basic progress estimation for DB-only jobs
                     progress = 0
                     message = "Waiting for worker..."
-                    
+
                     if status in ["processing", "paused"]:
                         # Try to get accurate progress from pre-fetched crawl_states
                         state = job_states.get(job_id)
@@ -268,7 +268,7 @@ async def list_active_operations():
                             pending = state.get("total_pending")
                             if pending is None:
                                 pending = len(state.get("frontier", []) or [])
-                                
+
                             total = visited + pending
                             if total > 0:
                                 progress = int((visited / total) * 100)
@@ -282,7 +282,7 @@ async def list_active_operations():
                         else:
                             progress = 0  # Fallback if no state found
                             message = "Worker starting..."
-                    
+
                     op_data = {
                         "operation_id": job_id,
                         "operation_type": "crawl",
@@ -295,7 +295,7 @@ async def list_active_operations():
                         "source_id": None, # Can't easily get this without joining
                     }
                     active_operations.append({k: v for k, v in op_data.items() if v is not None})
-                    
+
         except Exception as e:
             logfire.error(f"Failed to fetch active DB jobs: {e}")
 

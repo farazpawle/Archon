@@ -263,7 +263,7 @@ class BatchCrawlStrategy:
                         "html": result.html,  # Use raw HTML
                         "title": title,
                     })
-                    
+
                     # Checkpoint: Save visited URL
                     if checkpoint_callback:
                         try:
@@ -273,7 +273,7 @@ class BatchCrawlStrategy:
                             await checkpoint_callback([original_url], frontier)
                         except Exception as e:
                             logger.warning(f"Checkpoint failed: {e}")
-                            
+
                 else:
                     logger.warning(
                         f"Failed to crawl {result.url}: {getattr(result, 'error_message', 'Unknown error')}"
